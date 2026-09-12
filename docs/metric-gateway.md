@@ -20,7 +20,7 @@ Status: revised design, not yet implemented. This revision supersedes the previo
 | 10 | API groups | `custom.metrics.k8s.io` only |
 | 11 | `btop` JSON output | **Flattened** `{name, namespace, cpu, memory}` shape |
 | 12 | Distribution | **Raw binary** (no Krew/Homebrew in v1) |
-| 13 | Authorization | **Apiserver authorizes metric requests**; trusted-proxy-only gateway; ServiceAccount resource reads; no gateway SubjectAccessReview or impersonation |
+| 13 | Authorization | Built on `sigs.k8s.io/custom-metrics-apiserver`'s standard aggregated-apiserver pattern: delegated authentication (front-proxy or direct token) plus **delegated authorization — the gateway issues a SubjectAccessReview per request** against kube-apiserver; ServiceAccount used only for backend resource reads, never for authorization; no caller impersonation |
 | 14 | Historical membership | Retained objects selected at query time, not a complete historical ownership ledger |
 | 15 | Deferred features | Temporal `sum`, per-container output, and server-side watch |
 
@@ -141,7 +141,7 @@ Wildcard `*` on workloads returns a list of single aggregated values.
 - Prefix all paths with `/apis/custom.metrics.k8s.io/v1beta2`. Both named and wildcard successful HTTP responses are `MetricValueList`; a named response has exactly one item. A provider's single `MetricValue` is wrapped at the HTTP edge.
 - Each item includes `describedObject` with API version, kind, name, UID and namespace where applicable, `metricName`, `timestamp` (evaluation time), `windowSeconds` (statistic window), and `value`. The five-minute CPU smoothing interval is documented separately; it does not replace `windowSeconds`.
 - `labelSelector` selects API objects for wildcard requests. Nonempty object selectors on named requests are rejected with `400`. `metricLabelSelector` is a separate selector channel; nonempty values are unsupported in v1 and return `400`, never silently ignored.
-- Malformed metric syntax/selectors → `400`; unknown or unsupported metric/resource, missing named object, or named object with no eligible retained members or verified inactivity throughout the window → `404`. Invalid/untrusted authentication → `401`; denied requests are rejected by kube-apiserver with `403` before forwarding. Gateway ServiceAccount permission/configuration failures → `503`, not caller `403`.
+- Malformed metric syntax/selectors → `400`; unknown or unsupported metric/resource, missing named object, or named object with no eligible retained members or verified inactivity throughout the window → `404`. Invalid/untrusted authentication → `401` (delegated authentication). Denied requests → `403`, from a delegated `SubjectAccessReview` the gateway issues against kube-apiserver for the exact verb/namespace/`custom.metrics.k8s.io` resource-and-subresource, evaluated before the provider is invoked — not a caller-facing check the gateway's own business logic performs. Gateway ServiceAccount permission/configuration failures (the ServiceAccount itself cannot read a backend resource) → `503`, a distinct failure from a caller's `403`.
 - Backend/protocol failures, partial backend responses, stale active input or incomplete expected coverage → `503`; exceeded per-query or total computation deadline → `504`; admission saturation → `429` with `Retry-After`; local count/size limits in §6.3 → `413`. All errors use Kubernetes `Status` objects with matching HTTP/status codes and sanitized messages. A backend's own sample-limit failure is a backend error (`503`), not proof of a local request-size violation.
 - Wildcards omit objects with no eligible retained members or verified inactivity throughout the window, return the remaining items sorted by namespace/name/UID, and return an empty list when all are absent. Missing usage for expected-active members or unknown lifecycle/completeness is always `503`, even when every usage series is missing. Wildcards fail as a whole on these or other operational errors; do not return a misleading partial success. A successful list describes available measurements, not an inventory of all objects.
 
@@ -193,17 +193,15 @@ gateway_cronjob_notfound_total
 
 ## 5. Authorization Model
 
-**Authorization to a custom-metrics request is sufficient to receive its corresponding metric data.** Callers do not need `get`/`list` access to the underlying Pods, Nodes or workloads. This does not grant them those Kubernetes API permissions or unrestricted access to other custom-metrics endpoints; kube-apiserver still authorizes each path, namespace and resource/subresource.
+The gateway is built on [`sigs.k8s.io/custom-metrics-apiserver`](https://github.com/kubernetes-sigs/custom-metrics-apiserver)'s `pkg/cmd.AdapterBase` (see `design.md` §10), the same framework and pattern used by `metrics-server` and `prometheus-adapter`. It uses that framework's standard aggregated-apiserver authentication and authorization, not a bespoke proxy-only mode:
 
-- kube-apiserver authenticates and authorizes every request before proxying it. Operators grant the appropriate resource/metric subresources in `custom.metrics.k8s.io`, rather than treating API discovery access as permission to read all metrics.
-- The gateway performs no SubjectAccessReview and no caller impersonation. It uses its own ServiceAccount for all object resolution. Shared metric caching is valid under this identity-independent policy.
-- Resource routes accept **only authenticated aggregation-proxy requests**. Validate the proxy client certificate against the request-header CA and allowed proxy CNs before accepting configured identity headers (normally `X-Remote-User`, `X-Remote-Group`, and extras). `Impersonate-*` headers are not the inbound identity protocol. Use the authenticated request context for audit attribution, never unvalidated raw headers.
-- Read and watch `kube-system/extension-apiserver-authentication` through the standard authentication-reader RoleBinding. Use its request-header configuration, require a nonempty allowed-proxy-name list, and reload CA/name changes. Fail closed when the trust configuration is unavailable or invalid. Do not confuse the serving-certificate CA, the ordinary Kubernetes client CA, and the front-proxy CA.
-- No ordinary bearer-token, end-user client-certificate, or anonymous fallback is permitted on resource routes. A NetworkPolicy limits access to the control plane as defense in depth, but cannot replace proxy certificate validation. Anyone controlling a trusted proxy credential is inside this trust boundary.
-- The exact `/healthz`, `/livez`, and `/readyz` paths may be anonymous and must return no sensitive data. `/metrics` uses a separate configured monitoring-client CA and allowed CNs; monitoring credentials cannot access API resource routes, and proxy identity headers have no effect on monitoring authorization. No other unauthenticated endpoints are installed.
-- No `--rbac-enforce` flag exists. Generic-apiserver defaults must not silently enable direct access or delegated SAR. The no-SAR mode must be an explicit, tested proxy-only configuration.
+- **Delegated authentication** (`DelegatingAuthenticationOptions`): accepts the aggregation layer's front-proxy request headers (`X-Remote-User`, `X-Remote-Group`, extras), validated against the request-header CA and allowed proxy CNs read from the `extension-apiserver-authentication` ConfigMap, with CA/name rotation. It can also accept a direct bearer token, verified via `TokenReview` against kube-apiserver, for callers that reach the gateway without going through the aggregation proxy (useful for local testing; production traffic goes through kube-apiserver's aggregation layer). `Impersonate-*` headers are not the inbound identity protocol. Fail closed when the trust configuration is unavailable or invalid; do not confuse the serving-certificate CA, the ordinary Kubernetes client CA, and the front-proxy CA.
+- **Delegated authorization** (`DelegatingAuthorizationOptions`): for every request, before the provider is invoked, the gateway issues a `SubjectAccessReview` against kube-apiserver asking whether the authenticated caller may perform the request's verb on the exact `custom.metrics.k8s.io` resource/subresource/namespace/name. **This is the mechanism that enforces "callers do not need `get`/`list` access to the underlying Pods, Nodes or workloads to read their metrics"**: operators grant RBAC on the `custom.metrics.k8s.io` resource and metric subresource specifically (example HPA/user roles in §8), and that grant — not access to the underlying resource — is what the SubjectAccessReview checks. A caller with only custom-metrics RBAC succeeds; a caller with only Pod/workload RBAC and no custom-metrics RBAC is denied `403`, even though the gateway itself reads the same Pods with its own ServiceAccount to compute the answer.
+- The gateway's own ServiceAccount is used **only** for backend object resolution (Pods, Nodes, workloads, Jobs) inside `internal/resolver` and Prometheus queries — never to make the authorization decision above, and never via impersonation. Because the SubjectAccessReview already gated the exact request before the provider runs, and resolution always uses this same ServiceAccount regardless of caller, cached results are valid across callers within the TTL (design.md §6 step 2); caller identity is deliberately excluded from the cache key.
+- The exact `/healthz`, `/livez`, and `/readyz` paths are anonymous by default (generic-apiserver's standard behavior) and return no sensitive data; liveness and discovery do not depend on Prometheus availability, only the gateway's added readiness checks do. `/metrics` goes through the same delegated authentication/authorization chain as resource routes — there is no separate monitoring-specific client CA. A Prometheus `ServiceMonitor` or other scraper needs a bearer token bound to a ClusterRole granting `get` on the nonResourceURL `/metrics`, the same pattern used to scrape kube-apiserver or kubelet.
+- No ordinary end-user client-certificate or anonymous fallback is permitted on resource routes; a NetworkPolicy limits access to the control plane as defense in depth but does not replace delegated authentication/authorization.
 
-**RBAC:** gateway ServiceAccount needs `get`/`list` on Pods, Nodes and supported workloads, plus the authentication-reader binding. It needs no `impersonate`, TokenReview, or SubjectAccessReview permission. Supporting direct authenticated clients later requires a separate authorization design, not relaxing proxy-only checks.
+**RBAC:** the gateway ServiceAccount needs `get`/`list` on Pods, Nodes and supported workloads (for resolution), a `ClusterRoleBinding` to the built-in `system:auth-delegator` `ClusterRole` (for the `TokenReview`/`SubjectAccessReview` calls delegated authentication/authorization make on its behalf), and the `extension-apiserver-authentication-reader` `RoleBinding` in `kube-system`. It needs no `impersonate` permission. Callers need RBAC on the `custom.metrics.k8s.io` resource/subresource they read (§8 example bindings) — that RBAC is what delegated authorization actually enforces per request, not merely documentation of intended access.
 
 ---
 
@@ -211,33 +209,46 @@ gateway_cronjob_notfound_total
 
 ### 6.1 Gateway Flags / Env Vars
 
+Gateway-specific flags, defined by this repository and following the CLI-over-env-over-default precedence in `design.md` §5.2:
+
 | Flag | Env Var | Default | Purpose |
 | :--- | :--- | :--- | :--- |
-| `--prometheus-url` | `GATEWAY_PROMETHEUS_URL` | — | Backend endpoint |
-| `--prometheus-timeout` | `GATEWAY_PROM_TIMEOUT` | `10s` | Per-query timeout |
-| `--prometheus-max-conns` | `GATEWAY_PROM_MAX_CONNS` | `100` | Connection pool |
-| `--cluster` | `GATEWAY_CLUSTER` | — | Required exact backend cluster label |
-| `--prometheus-ca-file` | `GATEWAY_PROM_CA` | system roots | Backend TLS trust |
-| `--prometheus-token-file` | `GATEWAY_PROM_TOKEN_FILE` | — | Optional bearer-token file; never log its contents |
-| `--request-timeout` | `GATEWAY_REQUEST_TIMEOUT` | `30s` | Total computation deadline |
-| `--max-inflight-requests` | `GATEWAY_MAX_INFLIGHT` | `128` | Admitted metric requests including waiters |
-| `--max-shared-computations` | `GATEWAY_MAX_COMPUTATIONS` | `32` | Live distinct computations, including queued work |
-| `--max-concurrent-queries` | `GATEWAY_MAX_QUERIES` | `16` | Global backend query concurrency |
-| `--cache-ttl-short` | `GATEWAY_CACHE_TTL_SHORT` | `15s` | TTL for `window ≤ 1h` |
-| `--cache-ttl-long` | `GATEWAY_CACHE_TTL_LONG` | `10m` | TTL for `window > 1h` |
-| `--cache-size` | `GATEWAY_CACHE_SIZE` | `10000` | LRU cap |
-| `--cache-max-bytes` | `GATEWAY_CACHE_MAX_BYTES` | `67108864` | Accounted cache byte cap |
-| `--catalog-path` | `GATEWAY_CATALOG_PATH` | `/etc/gateway/catalog.yaml` | Catalog mount |
-| `--cronjob-fallback-window` | `GATEWAY_CRONJOB_FALLBACK` | `24h` | Recent-Job lookback |
-| `--tls-cert-file` | `GATEWAY_TLS_CERT` | — | Serving cert |
-| `--tls-private-key-file` | `GATEWAY_TLS_KEY` | — | Serving key |
-| `--metrics-client-ca-file` | `GATEWAY_METRICS_CLIENT_CA` | — | Optional dedicated monitoring-client CA |
-| `--metrics-client-names` | `GATEWAY_METRICS_CLIENT_NAMES` | — | Allowed monitoring certificate CNs; required with monitoring CA |
-| `--secure-port` | `GATEWAY_SECURE_PORT` | `6443` | Listen port |
-| `--log-level` | `GATEWAY_LOG_LEVEL` | `info` | |
-| `--discovery-max-metrics` | `GATEWAY_DISCOVERY_MAX` | `1000` | Resource/metric entry cap |
+| `--cluster` | `CLUSTER` | — | Required exact backend cluster label |
+| `--prometheus-url` | `PROMETHEUS_URL` | — | Backend endpoint |
+| `--prometheus-timeout` | `PROMETHEUS_TIMEOUT` | `10s` | Per-query timeout |
+| `--prometheus-max-conns` | `PROMETHEUS_MAX_CONNS` | `100` | Connection pool |
+| `--prometheus-ca-file` | `PROMETHEUS_CA_FILE` | system roots | Backend TLS trust |
+| `--prometheus-token-file` | `PROMETHEUS_TOKEN_FILE` | — | Optional bearer-token file; never log its contents |
+| `--request-timeout` | `REQUEST_TIMEOUT` | `30s` | Total computation deadline |
+| `--max-inflight-requests` | `MAX_INFLIGHT` | `128` | Admitted metric requests including waiters |
+| `--max-shared-computations` | `MAX_COMPUTATIONS` | `32` | Live distinct computations, including queued work |
+| `--max-concurrent-queries` | `MAX_QUERIES` | `16` | Global backend query concurrency |
+| `--cache-ttl-short` | `CACHE_TTL_SHORT` | `15s` | TTL for `window ≤ 1h` |
+| `--cache-ttl-long` | `CACHE_TTL_LONG` | `10m` | TTL for `window > 1h` |
+| `--cache-size` | `CACHE_SIZE` | `10000` | LRU cap |
+| `--cache-max-bytes` | `CACHE_MAX_BYTES` | `67108864` | Accounted cache byte cap |
+| `--catalog-path` | `CATALOG_PATH` | `/etc/gateway/catalog.yaml` | Catalog mount |
+| `--cronjob-fallback-window` | `CRONJOB_FALLBACK` | `24h` | Recent-Job lookback |
+| `--log-level` | `LOG_LEVEL` | `info` | |
+| `--discovery-max-metrics` | `DISCOVERY_MAX` | `1000` | Resource/metric entry cap |
 
-Request-header trust comes from the authentication ConfigMap, not a general `--client-ca-file`. Without monitoring credentials configured, `/metrics` denies access; the two monitoring flags must be supplied together. TLS verification is never disabled for Prometheus; reject URLs containing userinfo and do not forward credentials across redirects.
+TLS verification is never disabled for Prometheus; reject URLs containing userinfo and do not forward credentials across redirects.
+
+Serving, authentication, authorization, and Kubernetes-access flags are **not** redefined by this repository — they come from `sigs.k8s.io/custom-metrics-apiserver`'s `basecmd.AdapterBase`, registered on the same command (`design.md` §5.1, §10), and have no environment-variable bindings (CLI-flag-only, matching upstream's own contract):
+
+| Flag | Purpose |
+| :--- | :--- |
+| `--secure-port` | Listen port (framework default `6443`) |
+| `--tls-cert-file` / `--tls-private-key-file` | Serving certificate/key |
+| `--authentication-kubeconfig` | kubeconfig used to reach kube-apiserver for delegated `TokenReview` |
+| `--authentication-skip-lookup` | Disable reading the `extension-apiserver-authentication` ConfigMap (must stay `false` in production) |
+| `--authorization-kubeconfig` | kubeconfig used to reach kube-apiserver for delegated `SubjectAccessReview` |
+| `--requestheader-client-ca-file` / `--requestheader-allowed-names` | Front-proxy trust, normally sourced automatically from the authentication ConfigMap |
+| `--lister-kubeconfig` | kubeconfig for the resolver's dynamic client/RESTMapper (defaults to in-cluster config, i.e. the gateway ServiceAccount) |
+| `--discovery-interval` | Refresh interval for the dynamic RESTMapper |
+| `--client-qps` / `--client-burst` | Client-side throttle for the lister client |
+
+`/metrics` is authorized through the same delegated chain as resource routes (§5); there are no separate `--metrics-client-ca-file`/`--metrics-client-names` flags.
 
 ### 6.2 btop Flags / Env Vars
 
@@ -365,11 +376,13 @@ Install: place on `$PATH` as `kubectl-btop`. Krew/Homebrew deferred to v2.
 | `metrics-gateway-certs` | cert-manager `Certificate` | SAN `metrics-gateway.<ns>.svc` |
 | `v1beta2.custom.metrics.k8s.io` | `APIService` | `caBundle` from cert-manager |
 | `metrics-gateway` | ServiceAccount + ClusterRole | Get/list Pods, Nodes and workloads; no impersonation |
+| `metrics-gateway-auth-delegator` | ClusterRoleBinding | Bind built-in `system:auth-delegator` to gateway ServiceAccount, for delegated `TokenReview`/`SubjectAccessReview` |
 | `metrics-gateway-auth-reader` | RoleBinding in `kube-system` | Bind `extension-apiserver-authentication-reader` to gateway ServiceAccount |
+| `metrics-gateway-reader` (example) | ClusterRole + ClusterRoleBinding | Grants callers (e.g. HPA's `system:kube-controller-manager`) `get`/`list`/`watch` on specific `custom.metrics.k8s.io` resource/subresources — the RBAC delegated authorization actually enforces per request (§5) |
 | `metrics-gateway` | NetworkPolicy | Control-plane API ingress, monitoring ingress, required egress |
 | `metrics-gateway-catalog` | ConfigMap | Base metric definitions |
 | `metrics-gateway` | PodDisruptionBudget | `minAvailable: 1` |
-| `metrics-gateway` | ServiceMonitor | Optional; dedicated monitoring client certificate and serving-CA verification |
+| `metrics-gateway` | ServiceMonitor | Optional; scrapes `/metrics` with a bearer token authorized via the same delegated chain as resource routes, not a dedicated monitoring CA |
 
 cert-manager and the Prometheus Operator CRDs are optional integrations, not unconditional install prerequisites. Provide ordinary Secret/TLS and scraping examples too. Monitor and reload serving certificates before expiry; set termination grace time greater than the request deadline and drain on SIGTERM. Only one APIService can own a group/version: installation must detect an existing custom-metrics adapter and refuse to replace it silently. Discovery stays independent of Prometheus availability; readiness reflects backend checks, liveness does not.
 
@@ -424,12 +437,12 @@ GET /apis/custom.metrics.k8s.io/v1beta2/namespaces/prod/deployments.apps/web/cpu
         │
         ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ apiserver: authn + authz against custom.metrics.k8s.io      │
+│ apiserver: aggregation proxy + delegated authn/authz (SAR)   │
 └──────────────────────┬──────────────────────────────────────┘
                        ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Gateway                                                     │
-│  1. Verify trusted proxy, then parse metric                │
+│  1. Parse metric (authn/authz already passed, see above)   │
 │  2. Cache lookup (TTL 15s)  ──hit──▶ return                 │
 │  3. ServiceAccount: Deployment → full selector → Pod UIDs   │
 │  4. Validate normalized input coverage for selected UIDs   │
@@ -469,7 +482,7 @@ GET /apis/custom.metrics.k8s.io/v1beta2/namespaces/prod/cronjobs.batch/nightly-b
         ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Gateway                                                     │
-│  1. Verify trusted proxy, then parse metric                │
+│  1. Parse metric (authn/authz already passed, see above)   │
 │  2. Cache lookup (TTL 10m)                                  │
 │  3. Resolve CronJob → active Jobs (status.active > 0)       │
 │     ├── found ──▶ full selectors → retained Pod UID union  │
@@ -496,7 +509,7 @@ GET /apis/custom.metrics.k8s.io/v1beta2/namespaces/prod/cronjobs.batch/nightly-b
 - Tier-1 + Tier-2 cache with window-driven TTL
 - `btop` plugin with watch mode and flattened JSON
 - Raw binary distribution
-- Apiserver endpoint authorization, trusted-proxy authentication, ServiceAccount resolution
+- Delegated authentication and delegated (SAR-based) authorization via `sigs.k8s.io/custom-metrics-apiserver`, ServiceAccount resolution
 - Normalized recording-rule inputs with identity, coverage and freshness validation
 - Prometheus self-metrics
 - CLI/env configuration
@@ -511,8 +524,8 @@ Before release, deliver and test:
 2. **`btop` command reference** — every flag, every subcommand, exit codes, examples.
 3. **Sequence diagrams** — pod, node, workload, CronJob-fallback, cache-hit, cache-miss.
 4. **Catalog schema** — formal YAML schema for base metric definitions.
-5. **RBAC manifests** — gateway read-only ClusterRole, authentication-reader binding, and example HPA metric-reader bindings (no caller resource-read requirement).
+5. **RBAC manifests** — gateway read-only ClusterRole, `system:auth-delegator` binding, authentication-reader binding, and example HPA metric-reader bindings on `custom.metrics.k8s.io` (no caller resource-read requirement, but a real custom-metrics RBAC grant is required since it is what delegated authorization enforces per request).
 6. **Normalized recording rules and numerical fixtures** — at least one supported scrape setup, including node mapping, lifecycle, completeness, historical gaps and duplicate-source tests.
-7. **Security integration tests** — direct-access/header-spoof rejection, proxy CA/name rotation, monitoring isolation, and successful metric reads by users lacking underlying resource permissions on cache hits and misses.
+7. **Security integration tests** — delegated-authentication rejection of untrusted/spoofed identity, request-header CA/name rotation, delegated-authorization (SAR) denial for callers lacking `custom.metrics.k8s.io` RBAC, and successful metric reads by users lacking underlying resource permissions on cache hits and misses.
 
 Deferred: temporal `sum`, per-container API/output, complete historical ownership reconstruction, direct-client gateway authorization, and server-side watch. These require explicit contracts rather than silent approximations.

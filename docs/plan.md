@@ -19,7 +19,7 @@ flowchart TD
     T0 --> T3
     T0 --> T4
 
-    T1[T1 Public API server boundary<br/>pkg/custommetrics + internal/apiserver] --> T6
+    T1[T1 AdapterBase wiring boundary<br/>sigs.k8s.io/custom-metrics-apiserver + fake provider] --> T6
     T2[T2 Catalog + recording rules/fixtures<br/>internal/catalog + monitoring/] --> T5
     T3[T3 Resource resolver<br/>internal/resolver] --> T6
     T4[T4 Prometheus query layer<br/>internal/prometheus] --> T5
@@ -39,12 +39,13 @@ flowchart TD
     T11 -.-> T10
 ```
 
-Independent starting points: **T1, T2, T3, T4** need T0 (they live under the shared `internal/` tree and
-depend on the pinned `controller-gen`/Prometheus tooling and Makefile targets T0 sets up). **T9 needs
+Independent starting points: **T1, T2, T3, T4** need T0 (T1 lives under `cmd/custom-metrics` and pins
+`sigs.k8s.io/custom-metrics-apiserver`; T2–T4 live under the shared `internal/` tree; all four depend on
+the pinned `controller-gen`/Prometheus tooling and Makefile targets T0 sets up). **T9 needs
 none of that.** `cmd/kubectl-btop` only talks to the Kubernetes API — `k8s.io/client-go` for
 kubeconfig/REST config and `k8s.io/metrics/pkg/client/custom_metrics` for the metrics calls themselves —
 plus `cobra`/`pflag` for its own command tree. It has zero dependency on `internal/gateway`,
-`internal/prometheus`, `internal/catalog`, `internal/cache`, `pkg/custommetrics`, or on any of T0's
+`internal/prometheus`, `internal/catalog`, `internal/cache`, `sigs.k8s.io/custom-metrics-apiserver`, or on any of T0's
 gateway-specific setup (controller-gen pinning, Prometheus test tooling). It can be developed, unit
 tested, and merged as its own self-contained module-internal path in full isolation, even before T0's
 gateway-oriented scaffolding exists — the only shared artifact is the repository's `go.mod`, which a `T9`
@@ -85,41 +86,48 @@ an empty tree, and `go.mod` pins the versions listed in design.md §14.
 
 ---
 
-## T1 — Public API server boundary
+## T1 — AdapterBase wiring boundary
 
-**Goal:** prove the reusable server contract end-to-end with no gateway dependencies, so external
-consumers and the gateway itself share one embeddable implementation.
+**Goal:** prove `cmd/custom-metrics`'s wiring of `sigs.k8s.io/custom-metrics-apiserver`'s `basecmd.AdapterBase`
+end-to-end with a fake provider, before any gateway-specific logic exists — the framework, not this
+repository, owns the reusable server implementation (design.md §2.1).
 
-**Packages:** `pkg/custommetrics/*`, `internal/apiserver/*`.
+**Packages:** `cmd/custom-metrics/{main,command,flags,version,health}.go`, using a temporary fake
+`provider.CustomMetricsProvider` in this task's own tests (`internal/gateway`'s real provider lands in T6).
 
-**Reads:** design.md §3 (module boundary), §10, §11.2; metric-gateway.md §3.5, §3.6 (wire/path/error
-contract), §5 (proxy-only authentication).
+**Reads:** design.md §3 (dependency direction), §10 (API server integration); metric-gateway.md §3.5, §3.6
+(wire/path/error contract), §5 (delegated authentication/authorization model).
 
 **Scope:**
-- `internal/apiserver`: generic API-server wiring, `/apis/custom.metrics.k8s.io/v1beta2` route
-  installation, discovery from provider descriptors, `MetricInfo` type definition, proxy-only
-  authentication (trusted front-proxy cert + CN validation, `X-Remote-*` headers), separate monitoring
-  CA/CN policy for `/metrics`, health endpoints (`/healthz`, `/readyz`, `/livez`) always anonymous and
-  Prometheus-independent.
-- `pkg/custommetrics`: `Provider` interface, `Options`, `New`/`Run` facade, `MetricInfo` public alias.
-  Must not import any gateway-specific internal package (§3 rule 10) — add an architecture/dependency
-  test enforcing this now, not later.
-- List-wrapping: named requests return single-item `MetricValueList`; wildcard requests return the full
-  list; malformed selectors → `400` per metric-gateway.md §3.6.
-- No SubjectAccessReview, no impersonation, fail-closed on invalid/missing trust configuration.
+- Construct `basecmd.AdapterBase` inside a `*cobra.Command`: `adapter.FlagSet = cmd.Flags()`,
+  `adapter.InstallFlags()`, then register this repository's own gateway flags (§ T6) on the same
+  `cmd.Flags()`.
+- `adapter.WithCustomMetrics(fakeProvider)` for this task's tests; `adapter.Config()` to inject a
+  placeholder readyz check (real checks land in T6); `adapter.Run(ctx)` to serve.
+- Verify discovery lists the fake provider's `provider.CustomMetricInfo` entries, named/wildcard list
+  wrapping (`MetricValueList`, single item for named requests) and malformed-selector `400`s come from the
+  framework's own REST storage — this repository does not reimplement that layer.
+- Verify delegated authentication/authorization: a caller with `custom.metrics.k8s.io` RBAC on the fake
+  provider's resource succeeds; a caller without it gets `403` from the SubjectAccessReview
+  `DelegatingAuthorizationOptions` issues, before the fake provider is ever called; an unauthenticated or
+  spoofed-identity request gets `401`. `/healthz`, `/readyz`, `/livez` stay anonymous and
+  Prometheus-independent (there is no Prometheus yet in this task).
+- No gateway-specific dependency test is needed here: `internal/gateway`, `internal/prometheus`,
+  `internal/resolver`, `internal/catalog`, and `internal/cache` do not exist as import targets for
+  `cmd/custom-metrics` yet at this point in the sequence.
 
-**Out of scope:** anything Prometheus-, catalog-, or workload-resolution-related. Use a fake in-memory
-`Provider` for this task's tests.
+**Out of scope:** anything Prometheus-, catalog-, or workload-resolution-related; the real
+`internal/gateway` provider (T6).
 
 **Depends on:** T0.
 
-**Blocks:** T6 (gateway wiring needs this facade to exist and be stable).
+**Blocks:** T6 (gateway wiring drops its real provider into this already-proven `AdapterBase` setup).
 
-**Done when:** a fake provider can be registered, discovery lists its `MetricInfo` entries, a client using
-`k8s.io/metrics/pkg/client/custom_metrics` gets correct named/wildcard responses, direct bearer-token and
-unproxied requests are rejected, monitoring-CA requests cannot reach resource routes, and the dependency
-test confirms zero imports of `internal/gateway`, `internal/prometheus`, `internal/resolver`,
-`internal/catalog`, or `internal/cache` from `pkg/custommetrics`.
+**Done when:** a fake provider can be registered via `WithCustomMetrics`, discovery lists its
+`CustomMetricInfo` entries, a client using `k8s.io/metrics/pkg/client/custom_metrics` gets correct
+named/wildcard responses, an authenticated caller without the right `custom.metrics.k8s.io` RBAC is
+rejected `403` by delegated authorization while one with it succeeds, and unauthenticated/untrusted
+requests are rejected `401`.
 
 ---
 
@@ -273,30 +281,41 @@ does not cancel other waiters; admission limits return the correct status/backof
 ## T6 — Gateway orchestration and wiring (critical path)
 
 **Goal:** the actual use-case flow that ties catalog, resolver, Prometheus, and cache together behind the
-`pkg/custommetrics.Provider` contract, plus the `cmd/custom-metrics` binary that assembles and serves it.
+`sigs.k8s.io/custom-metrics-apiserver/pkg/provider.CustomMetricsProvider` contract, dropped into T1's
+already-proven `AdapterBase` wiring in place of its fake provider.
 
 **Packages:** `internal/gateway/*`, `internal/telemetry/*`, `internal/config/*`, `cmd/custom-metrics/*`
 (minus `rbac.go`, which is T7).
 
-**Reads:** design.md §6 (full request path), §10 (API server integration/readiness), §5 (flags/env
-precedence); metric-gateway.md §5 (authorization model), §6.1 (all gateway flags), §3.7, §9 (full request
-flow diagrams).
+**Reads:** design.md §6 (full request path), §7 (resource resolution via `AdapterBase`'s dynamic
+client/RESTMapper), §10 (API server integration/readiness), §5 (flags/env precedence); metric-gateway.md
+§5 (delegated authentication/authorization model), §6.1 (all gateway flags), §3.7, §9 (full request flow
+diagrams).
 
 **Scope:**
 - `internal/gateway/service.go`: implements the 10-step request path from design.md §6 exactly — parse →
   cache lookup → singleflight → resolve → capture eval time → query → validate coverage → build result →
-  convert → cache store → record telemetry.
-- `internal/gateway/provider.go`: implements `pkg/custommetrics.Provider`, converting internal results to
-  `MetricValue`/`MetricValueList`.
-- `cmd/custom-metrics`: flags/env with the precedence rules in design.md §5.2, `Complete`/`Validate`/`Run`
-  lifecycle, readiness checks (catalog loaded, ServiceAccount reads work, bounded Prometheus check) without
-  making liveness/discovery depend on Prometheus, SIGTERM drain within the grace period.
-- Telemetry: the metrics listed in metric-gateway.md §4 ("Cache Metrics"), with bounded cardinality (no
-  namespace/name/selector/user labels).
-- Error mapping: exact status codes from metric-gateway.md §3.6 (400/401/403/404/413/429/503/504) applied
-  consistently across every failure path.
+  convert → cache store → record telemetry. Step 1 assumes delegated authentication/authorization already
+  ran in `AdapterBase`'s filter chain (T1) before this code executes at all — this task does not implement
+  or re-check authorization.
+- `internal/gateway/provider.go`: implements `provider.CustomMetricsProvider`'s three methods directly,
+  converting internal results to `MetricValue`/`MetricValueList` using `k8s.io/metrics/pkg/apis/custom_metrics/v1beta2`
+  types and `provider` package error constructors (`NewMetricNotFoundError` and its variants) for 404s.
+- `cmd/custom-metrics`: replaces T1's fake provider with this real one via `adapter.WithCustomMetrics(...)`;
+  flags/env with the precedence rules in design.md §5.2 for the gateway-specific `Options` registered
+  alongside `AdapterBase`'s own flags; `Complete`/`Validate`/`Run` lifecycle; readiness checks (catalog
+  loaded, ServiceAccount reads work, bounded Prometheus check) injected via `adapter.Config()` without
+  making liveness/discovery depend on Prometheus; SIGTERM drain within the grace period (generic-apiserver's
+  own graceful shutdown, triggered by canceling the context passed to `adapter.Run(ctx)`).
+- Telemetry: the metrics listed in metric-gateway.md §4 ("Cache Metrics"), registered into the same
+  registry `AdapterBase`'s `/metrics` endpoint serves, with bounded cardinality (no namespace/name/
+  selector/user labels).
+- Error mapping: exact status codes from metric-gateway.md §3.6 (400/404/413/429/503/504 — 401/403 are
+  handled upstream of this code, by T1's `AdapterBase` wiring) applied consistently across every failure
+  path this task's code owns.
 
-**Out of scope:** RBAC marker generation and deployment YAML (T7); btop (T9/T10).
+**Out of scope:** RBAC marker generation and deployment YAML (T7); btop (T9/T10); delegated
+authentication/authorization mechanics (T1/upstream).
 
 **Depends on:** T1, T2, T3, T4, T5 all reaching a stable interface (not necessarily 100% feature-complete,
 but their public interfaces/types should be settled before this task starts integrating against them).
@@ -319,14 +338,22 @@ error class in §3.6.
 
 **Scope:**
 - `+kubebuilder:rbac` markers scoped to exactly get/list on Pods, Nodes, and the six supported workload
-  kinds — no wildcards, no impersonation/TokenReview/SubjectAccessReview.
+  kinds — no wildcards, no impersonation. This generated `ClusterRole` covers backend resolution only, not
+  the delegated-authentication/authorization plumbing below.
 - `go tool controller-gen` wiring in `make generate`, with a committed generated-file header on
   `deploy/base/role.yaml`.
-- Maintained (non-generated) manifests: ServiceAccount, ClusterRoleBinding, `extension-apiserver-
-  authentication-reader` RoleBinding, `APIService`, NetworkPolicy, PodDisruptionBudget, example HPA
-  metric-reader Role/RoleBinding, optional cert-manager `Certificate` and `ServiceMonitor` examples.
-- `make manifests` validation: serving-CA injection/rotation sanity, proxy/monitoring trust separation,
-  collision detection against an existing `APIService` for the same group/version.
+- Maintained (non-generated) manifests: ServiceAccount; a `ClusterRoleBinding` of the gateway ServiceAccount
+  to the built-in `system:auth-delegator` `ClusterRole` (grants the `TokenReview`/`SubjectAccessReview`
+  calls `DelegatingAuthenticationOptions`/`DelegatingAuthorizationOptions` make); the
+  `extension-apiserver-authentication-reader` RoleBinding; `APIService`; NetworkPolicy;
+  PodDisruptionBudget; an example HPA/user `ClusterRole` + `ClusterRoleBinding` granting `get`/`list`/`watch`
+  on specific `custom.metrics.k8s.io` resource/subresources — this is the RBAC delegated authorization
+  actually checks per request (metric-gateway.md §5), not a documentation-only convention; optional
+  cert-manager `Certificate` and `ServiceMonitor` examples (the `ServiceMonitor` needs a bearer token
+  authorized through the same delegated chain, not a dedicated monitoring CA).
+- `make manifests` validation: serving-CA injection/rotation sanity, presence of the `system:auth-delegator`
+  and authentication-reader bindings, collision detection against an existing `APIService` for the same
+  group/version.
 
 **Depends on:** T6 (needs the final binary/flag surface to document correctly), though the controller-gen
 tool pinning and marker syntax can be prototyped as soon as T0 lands.
@@ -334,8 +361,9 @@ tool pinning and marker syntax can be prototyped as soon as T0 lands.
 **Blocks:** nothing downstream except release packaging (T11) and full end-to-end tests (T8).
 
 **Done when:** `make generate` reproduces `deploy/base/role.yaml` byte-for-byte from markers, `make
-manifests` fails on a deliberately broken trust config or an `APIService` collision, and the example HPA
-binding grants metric reads without underlying workload reads.
+manifests` fails on a deliberately broken trust config, a missing `system:auth-delegator` binding, or an
+`APIService` collision, and the example HPA binding grants metric reads (verified via SAR) without
+underlying workload reads.
 
 ---
 
@@ -347,11 +375,12 @@ system, not just per-package.
 **Reads:** design.md §15 (levels 3–5); metric-gateway.md §12 ("Security integration tests").
 
 **Scope:**
-- Temporary proxy/serving/monitoring certificate fixtures; discovery, named/wildcard envelopes, spoofed
-  direct-access rejection, CA/CN rotation, monitoring-route isolation, stalled-request cancellation.
+- Temporary serving/request-header certificate fixtures; discovery, named/wildcard envelopes, spoofed
+  direct-access rejection, CA/CN rotation, `/metrics` route authorization, stalled-request cancellation.
 - Kind-cluster end-to-end: a user authorized only for `custom.metrics.k8s.io` reads (no underlying Pod/
   Node/workload read access) succeeds on cold cache, hot cache, and shared-singleflight paths; a user
-  without metrics access is rejected upstream by kube-apiserver before reaching the gateway.
+  without that `custom.metrics.k8s.io` RBAC reaches the gateway process but is rejected `403` by its
+  delegated `SubjectAccessReview` before `internal/gateway`'s provider is ever invoked.
 - HPA and `btop` verified against v1beta2 discovery with normalized fixtures.
 
 **Depends on:** T6 (needs a real running gateway), T7 (needs real RBAC/APIService manifests), and T9/T10
@@ -392,7 +421,7 @@ plumbing).
 **Depends on:** nothing but the Kubernetes API surface itself. `cmd/kubectl-btop` imports only
 `k8s.io/client-go`, `k8s.io/metrics/pkg/client/custom_metrics`, `github.com/spf13/cobra`, and
 `github.com/spf13/pflag` — none of `internal/gateway`, `internal/prometheus`, `internal/catalog`,
-`internal/cache`, or `pkg/custommetrics`, and none of T0's gateway-specific setup (controller-gen
+`internal/cache`, or `sigs.k8s.io/custom-metrics-apiserver`, and none of T0's gateway-specific setup (controller-gen
 pinning, Prometheus test tooling). It can be developed and unit-tested entirely against a fake/mock
 `custom_metrics` client, fully in parallel with — and without waiting on — T0's gateway scaffolding or
 any of T1–T6. The only shared artifact is the repository's `go.mod`; if T0 hasn't landed yet, this task
@@ -444,8 +473,9 @@ required in CI.
 
 **Scope:**
 - `Makefile` targets beyond T0's stub: `generate`, `manifests`, `test-rules` wired to their owning tasks.
-- CI: `go vet`, `go test -race ./...`, Kubernetes-module-minor alignment check, `go mod tidy` check,
-  dependency-graph test (from T1) enforced in CI, `promtool` fixture run (T2).
+- CI: `go vet`, `go test -race ./...`, Kubernetes-module-minor alignment check (including
+  `sigs.k8s.io/custom-metrics-apiserver`'s pinned version, design.md §14), `go mod tidy` check, `promtool`
+  fixture run (T2).
 - Cross-compilation of `kubectl-btop` only, to the five raw artifact names in metric-gateway.md §7.5, plus
   SHA256 checksums and cosign signing.
 - Container image build for `custom-metrics`: non-root user, read-only root filesystem, no shell.
