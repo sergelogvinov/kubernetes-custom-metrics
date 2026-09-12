@@ -243,20 +243,20 @@ Request-header trust comes from the authentication ConfigMap, not a general `--c
 
 | Flag | Env Var | Default | Purpose |
 | :--- | :--- | :--- | :--- |
-| `--window` | `btop_WINDOW` | `5m` | Statistical window |
-| `--stat` | `btop_STAT` | `avg` | Statistic |
-| `--selector` / `-l` | `btop_SELECTOR` | — | Label selector |
-| `--namespace` / `-n` | `btop_NAMESPACE` | ctx ns | |
-| `--no-headers` | `btop_NO_HEADERS` | `false` | |
-| `--sort-by` | `btop_SORT_BY` | `name` | `cpu`, `memory`, `name` |
-| `--output` / `-o` | `btop_OUTPUT` | `table` | `table`, `json`, `yaml` |
-| `--watch` / `-w` | `btop_WATCH` | `false` | |
-| `--watch-interval` | `btop_WATCH_INTERVAL` | `5s` | |
-| `--request-timeout` | `btop_REQUEST_TIMEOUT` | `35s` | Bound discovery and metric HTTP requests |
+| `--window` | `WINDOW` | `5m` | Statistical window |
+| `--stat` | — | `avg` | Statistic |
+| `--selector` / `-l` | — | — | Label selector |
+| `--namespace` / `-n` | `NAMESPACE` | ctx ns | |
+| `--no-headers` | — | `false` | |
+| `--sort-by` | `SORT_BY` | `name` | `cpu`, `memory`, `name` |
+| `--output` / `-o` | `OUTPUT` | `table` | `table`, `json`, `yaml` |
+| `--watch` / `-w` | — | `false` | |
+| `--watch-interval` | `WATCH_INTERVAL` | `5s` | |
+| `--request-timeout` | `REQUEST_TIMEOUT` | `35s` | Bound discovery and metric HTTP requests |
 | `--kubeconfig` | `KUBECONFIG` | — | |
-| `--context` | `btop_CONTEXT` | — | |
+| `--context` | `CONTEXT` | — | |
 
-Resolve explicit flags before parsing overridden environment values: an invalid env value must not defeat a valid explicit flag. Reject malformed effective values. `KUBECONFIG` retains client-go's path-list merging behavior; only an explicit `--kubeconfig` becomes an explicit single-file override. Reject namespace flags on nodes and `--selector` together with a named object. `--containers` is deferred and rejected in v1; aggregate pod metrics cannot be decomposed by the client.
+`--stat`, `--selector`, `--no-headers`, and `--watch` are flag-only and have no environment variable. Resolve explicit flags before parsing overridden environment values: an invalid env value must not defeat a valid explicit flag. Reject malformed effective values. `KUBECONFIG` retains client-go's path-list merging behavior; only an explicit `--kubeconfig` becomes an explicit single-file override. Reject namespace flags on nodes and `--selector` together with a named object. `--containers` is deferred and rejected in v1; aggregate pod metrics cannot be decomposed by the client.
 
 ### 6.3 Work and memory budgets
 

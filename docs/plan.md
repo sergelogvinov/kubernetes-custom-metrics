@@ -385,7 +385,7 @@ plumbing).
 - `output.go`: table/flattened-JSON/YAML rendering, numeric sort by CPU/memory descending with
   namespace/name tie-break, `name` sort ascending, stderr-only diagnostics, exit codes `0`/`1`/`2` per
   metric-gateway.md §7.3.
-- Env/flag precedence per design.md §5.2, applied to every `btop_*` variable in metric-gateway.md §6.2.
+- Env/flag precedence per design.md §5.2, applied to every environment variable in metric-gateway.md §6.2 (`--stat`, `--selector`, `--no-headers`, and `--watch` are flag-only).
 
 **Out of scope:** `watch.go` (T10), any TTY/alternate-screen logic.
 
