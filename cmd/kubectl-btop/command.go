@@ -15,7 +15,7 @@ func NewRootCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "btop",
 		Short:         "Show historical CPU and memory usage for Kubernetes workloads",
-		SilenceUsage:  false,
+		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			if err := opts.ResolveEnvironment(cmd.Flags().Changed, os.LookupEnv); err != nil {
@@ -26,9 +26,18 @@ func NewRootCommand() *cobra.Command {
 		},
 	}
 
+	// Flag-parsing errors bypass PersistentPreRunE entirely, so they need
+	// their own wrap to map to exit code 2 like every other usage error
+	// (design.md §4). Child commands inherit this when they don't set their
+	// own.
+	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return &usageError{err: err}
+	})
+
 	opts.AddFlags(cmd.PersistentFlags())
 
 	cmd.AddCommand(newVersionCommand())
+	cmd.AddCommand(newResourceCommands(opts)...)
 
 	return cmd
 }
