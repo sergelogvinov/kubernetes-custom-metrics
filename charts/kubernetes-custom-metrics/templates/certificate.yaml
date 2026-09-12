@@ -1,0 +1,54 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "kubernetes-custom-metrics.fullname" . }}
+  labels:
+    {{- include "kubernetes-custom-metrics.labels" . | nindent 4 }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "kubernetes-custom-metrics.fullname" . }}-ca
+  labels:
+    {{- include "kubernetes-custom-metrics.labels" . | nindent 4 }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  secretName: {{ include "kubernetes-custom-metrics.fullname" . }}-ca
+  duration: 87600h # 10y
+  issuerRef:
+    group: cert-manager.io
+    kind: Issuer
+    name: {{ include "kubernetes-custom-metrics.fullname" . }}
+  commonName: ca.webhook.kubernetes-custom-metrics
+  isCA: true
+  usages:
+    - digital signature
+    - key encipherment
+    - cert sign
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "kubernetes-custom-metrics.fullname" . }}-tls
+  labels:
+    {{- include "kubernetes-custom-metrics.labels" . | nindent 4 }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  secretName: {{ include "kubernetes-custom-metrics.fullname" . }}-tls
+  duration: 8760h # 1y
+  issuerRef:
+    group: cert-manager.io
+    kind: Issuer
+    name: {{ include "kubernetes-custom-metrics.fullname" . }}
+  dnsNames:
+    - {{ include "kubernetes-custom-metrics.fullname" . }}
+    - {{ include "kubernetes-custom-metrics.fullname" . }}.{{ .Release.Namespace }}
+    - {{ include "kubernetes-custom-metrics.fullname" . }}.{{ .Release.Namespace }}.svc
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+    - client auth

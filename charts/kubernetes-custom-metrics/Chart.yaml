@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=https://json.schemastore.org/chart.json
+apiVersion: v2
+name: kubernetes-custom-metrics
+description: Kubernetes Custom Metrics
+type: application
+home: https://github.com/sergelogvinov/kubernetes-custom-metrics
+sources:
+  - https://github.com/sergelogvinov/kubernetes-custom-metrics
+keywords:
+  - kubernetes
+  - custom-metrics
+  - metrics
+maintainers:
+  - name: sergelogvinov
+    url: https://github.com/sergelogvinov
+#
+# Versions are expected to follow Semantic Versioning (https://semver.org/)
+version: 0.0.1
+#
+# renovate: datasource=docker depName=ghcr.io/sergelogvinov/postgresql
+appVersion: v0.0.1

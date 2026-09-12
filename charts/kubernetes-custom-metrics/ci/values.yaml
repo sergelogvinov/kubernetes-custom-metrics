@@ -1,0 +1,22 @@
+image:
+  pullPolicy: Always
+  tag: edge-amd64
+
+args:
+  - --v=4
+  # - --cluster=test
+  - --prometheus-url=http://vmsingle-vm.monitoring.svc:8429
+
+podAnnotations:
+  cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+
+priorityClassName: system-cluster-critical
+
+podAntiAffinityPreset: hard
+podAntiAffinityPresetKey: kubernetes.io/hostname
+
+nodeSelector:
+  node-role.kubernetes.io/control-plane: ""
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    effect: NoSchedule

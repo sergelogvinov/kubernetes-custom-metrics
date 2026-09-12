@@ -1,0 +1,16 @@
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1beta2.custom.metrics.k8s.io
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ template "kubernetes-custom-metrics.fullname" . }}-tls
+spec:
+  group: custom.metrics.k8s.io
+  version: v1beta2
+  service:
+    name: {{ include "kubernetes-custom-metrics.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+    port: 443
+  groupPriorityMinimum: 100
+  versionPriority: 100
+  insecureSkipTLSVerify: false

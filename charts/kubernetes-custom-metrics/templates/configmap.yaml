@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kubernetes-custom-metrics.fullname" . }}
+  labels:
+    {{- include "kubernetes-custom-metrics.labels" . | nindent 4 }}
+data:
+  catalog.yaml: |
+    {{- if .Values.config }}
+    {{- toYaml .Values.config | nindent 4 }}
+    {{- else }}
+    bases:
+      cpu:
+        series: container_cpu_usage_seconds_total
+        unit: cores
+        scope: pod
+        aggregation: sum-then-stat
+      memory:
+        series: container_memory_working_set_bytes
+        unit: bytes
+        scope: pod
+        aggregation: sum-then-stat
+      node_cpu:
+        series: node_cpu_usage_cores
+        unit: cores
+        scope: node
+        aggregation: sum-then-stat
+      node_memory:
+        series: node_memory_used_bytes
+        unit: bytes
+        scope: node
+        aggregation: sum-then-stat
+    {{- end }}
