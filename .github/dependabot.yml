@@ -14,6 +14,15 @@ updates:
       interval: "monthly"
       day: "monday"
       time: "08:00"
+    cooldown:
+      default-days: 7
+    groups:
+      docker:
+        patterns:
+          - "docker/*"
+      actions:
+        patterns:
+          - "actions/*"
 
   - package-ecosystem: "gomod"
     directory: "/"
@@ -26,6 +35,8 @@ updates:
       interval: "monthly"
       day: "monday"
       time: "07:00"
+    cooldown:
+      default-days: 7
     groups:
       main:
         patterns:
