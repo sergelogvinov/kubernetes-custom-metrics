@@ -1,0 +1,21 @@
+bases:
+  cpu:
+    series: pod_cpu_usage_cores
+    unit: cores
+    scope: pod
+    aggregation: sum-then-stat
+  memory:
+    series: pod_memory_working_set_bytes
+    unit: bytes
+    scope: pod
+    aggregation: sum-then-stat
+  node_cpu:
+    series: node_cpu_usage_cores
+    unit: cores
+    scope: node
+    aggregation: sum-then-stat
+  node_memory:
+    series: node_memory_used_bytes
+    unit: bytes
+    scope: node
+    aggregation: stat-then-sum
