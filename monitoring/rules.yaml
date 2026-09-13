@@ -1,0 +1,164 @@
+# Normalized Prometheus input contract (metric-gateway.md §8, design.md §8).
+#
+# Documented scrape setup this rule set targets — the "at least one supported
+# scrape setup" required before release:
+#
+#   - kubelet's cAdvisor endpoint (container_cpu_usage_seconds_total,
+#     container_memory_working_set_bytes), scraped at <=15s.
+#   - kube-state-metrics (KSM) v2.10+ for lifecycle (kube_pod_status_phase,
+#     kube_node_status_condition) and expected per-container coverage
+#     (kube_pod_container_status_running).
+#   - node-exporter (node_cpu_seconds_total, node_memory_MemTotal_bytes,
+#     node_memory_MemAvailable_bytes, and its own "up" series), scraped with
+#     relabeling that sets the "instance" label to the Kubernetes Node name
+#     — kube-prometheus-stack's default node-exporter ServiceMonitor already
+#     does this via __meta_kubernetes_pod_node_name.
+#
+# The gateway matches series by name ("pod"/"node" labels, already present
+# on every metric above directly from KSM/cAdvisor/node-exporter), not by a
+# synthetic "uid" label — so, unlike an earlier revision of this rule set,
+# none of these rules join in kube_pod_info/kube_node_info. That join was a
+# uid-only identity attachment: harmless when it matched, but an inner join,
+# so a momentarily missing/delayed kube_pod_info row (scrape lag, KSM
+# restart, relabeling mismatch) silently dropped pod_active/pod_cpu_complete
+# for an otherwise perfectly healthy, actively-reporting pod.
+#
+# "cluster" is a single static label added by every rule below. It must be
+# changed (or templated by the deploying GitOps tool) to match the
+# gateway's own --cluster flag; "example" mirrors metric-gateway.md §3.2's
+# illustrative query and is not a real default. Omit --cluster (and this
+# label) entirely for a single-cluster backend with no "cluster" label.
+#
+# Known v1 limitation: pod completeness only checks currently-running
+# containers (kube_pod_container_status_running), so a native sidecar or
+# init container's coverage window is only validated while it reports as
+# running, not decomposed further; source-freshness gating beyond what
+# rate()/instant lookups naturally provide is enforced by internal/prometheus
+# at query time (metric-gateway.md §3.7), not baked into these rules.
+groups:
+  - name: gateway-normalized-pod
+    rules:
+      # pod_cpu_usage_cores sums five-minute per-container counter rates
+      # (rate before sum). Root cgroups, the pause container and empty
+      # container identities are excluded. A duplicate scrape source (the
+      # same container reachable through more than one job/instance) is
+      # collapsed with `max by (..., container)` before summing across
+      # containers, so a duplicated source does not double the result.
+      - record: pod_cpu_usage_cores
+        labels:
+          cluster: example
+        expr: >
+          sum by (namespace, pod) (
+            max by (namespace, pod, container) (
+              rate(container_cpu_usage_seconds_total{container!="", container!="POD", image!=""}[5m])
+            )
+          )
+
+      # pod_memory_working_set_bytes is summed container working set,
+      # deduplicated the same way as CPU.
+      - record: pod_memory_working_set_bytes
+        labels:
+          cluster: example
+        expr: >
+          sum by (namespace, pod) (
+            max by (namespace, pod, container) (
+              container_memory_working_set_bytes{container!="", container!="POD", image!=""}
+            )
+          )
+
+      # pod_active is 1 while the pod's phase is Running, 0 otherwise, and
+      # absent before creation / after the object is gone.
+      - record: pod_active
+        labels:
+          cluster: example
+        expr: >
+          sum by (namespace, pod) (
+            kube_pod_status_phase{phase="Running"}
+          )
+
+      # pod_cpu_complete / pod_memory_complete are 1 only when every
+      # currently-running container has a corresponding usage sample, 0 when
+      # some are missing, and absent when telemetry for the pod is entirely
+      # unavailable (an explicit "unknown", not an implicit zero).
+      - record: pod_cpu_complete
+        labels:
+          cluster: example
+        expr: >
+          count by (namespace, pod) (
+            max by (namespace, pod, container) (
+              rate(container_cpu_usage_seconds_total{container!="", container!="POD", image!=""}[5m])
+            )
+          )
+          == bool
+          count by (namespace, pod) (
+            max by (namespace, pod, container) (
+              kube_pod_container_status_running == 1
+            )
+          )
+
+      - record: pod_memory_complete
+        labels:
+          cluster: example
+        expr: >
+          count by (namespace, pod) (
+            max by (namespace, pod, container) (
+              container_memory_working_set_bytes{container!="", container!="POD", image!=""}
+            )
+          )
+          == bool
+          count by (namespace, pod) (
+            max by (namespace, pod, container) (
+              kube_pod_container_status_running == 1
+            )
+          )
+
+  - name: gateway-normalized-node
+    rules:
+      # node_cpu_usage_cores sums five-minute node_cpu_seconds_total rates
+      # over cores and the modes that represent real usage (user, nice,
+      # system, irq, softirq, steal); idle, iowait and guest/guest_nice are
+      # excluded to avoid idle accounting and guest double counting. A
+      # duplicately scraped node-exporter is collapsed with
+      # `max by (node, mode)` before summing modes.
+      - record: node_cpu_usage_cores
+        labels:
+          cluster: example
+        expr: >
+          sum by (node) (
+            max by (node, mode) (
+              label_replace(
+                rate(node_cpu_seconds_total{mode=~"user|nice|system|irq|softirq|steal"}[5m]),
+                "node", "$1", "instance", "(.+)"
+              )
+            )
+          )
+
+      # node_memory_used_bytes is MemTotal - MemAvailable, not kubelet
+      # working set; node and pod memory therefore have different
+      # definitions by design.
+      - record: node_memory_used_bytes
+        labels:
+          cluster: example
+        expr: >
+          max by (node) (label_replace(node_memory_MemTotal_bytes, "node", "$1", "instance", "(.+)"))
+          -
+          max by (node) (label_replace(node_memory_MemAvailable_bytes, "node", "$1", "instance", "(.+)"))
+
+      # node_active is 1 while the node's Ready condition is true.
+      - record: node_active
+        labels:
+          cluster: example
+        expr: >
+          sum by (node) (kube_node_status_condition{condition="Ready", status="true"})
+
+      # node_complete reports whether node-exporter itself was reachable for
+      # that node. Both node_cpu_usage_cores and node_memory_used_bytes
+      # share this single scrape source, so one series covers both
+      # quantities (internal/prometheus's completeSeriesName looks this up
+      # for both node_cpu and node_memory requests) instead of two
+      # identical node_cpu_complete/node_memory_complete rules.
+      - record: node_complete
+        labels:
+          cluster: example
+        expr: >
+          max by (node) (label_replace(up{job="node-exporter"}, "node", "$1", "instance", "(.+)"))

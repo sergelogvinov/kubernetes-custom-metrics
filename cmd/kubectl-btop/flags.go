@@ -106,8 +106,8 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 // ResolveEnvironment overrides every field whose flag was not explicitly set
 // with its documented environment variable (metric-gateway.md §6.2). changed
 // reports whether a given flag was explicitly passed; lookupEnv is injected
-// so tests never mutate the process environment. Stat, Selector, and
-// NoHeaders have no environment variable and are flag-only. KUBECONFIG is
+// so tests never mutate the process environment. Stat, Selector, SortBy,
+// and NoHeaders have no environment variable and are flag-only. KUBECONFIG is
 // deliberately excluded here too: client-go itself applies that environment
 // variable's path-list merging, and copying it into a single Kubeconfig
 // field would collapse that behavior to one file (design.md §5.2).
@@ -170,7 +170,7 @@ func (o *Options) Validate() error {
 }
 
 // minWindow is the shortest window the metric-name grammar accepts
-// (internal/catalog.MinWindow, kept here as a plain constant so this CLI
+// (pkg/catalog.MinWindow, kept here as a plain constant so this CLI
 // binary does not need to import the gateway's internal packages).
 const minWindow = time.Minute
 
