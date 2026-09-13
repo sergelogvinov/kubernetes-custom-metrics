@@ -121,10 +121,10 @@ helm-login: ## Helm Login
 
 .PHONY: helm-release
 helm-release: ## Helm Release
-	@rm -rf dist/
-	@helm package charts/kubernetes-custom-metrics -d dist
-	@helm push dist/kubernetes-custom-metrics-*.tgz oci://$(HELMREPO) 2>&1 | tee dist/.digest
-	@cosign sign --yes $(COSING_ARGS) $(HELMREPO)/kubernetes-custom-metrics@$$(cat dist/.digest | awk -F "[, ]+" '/Digest/{print $$NF}')
+	@rm -rf bin/
+	@helm package charts/kubernetes-custom-metrics -d bin
+	@helm push bin/kubernetes-custom-metrics-*.tgz oci://$(HELMREPO) 2>&1 | tee bin/.digest
+	@cosign sign --yes $(COSING_ARGS) $(HELMREPO)/kubernetes-custom-metrics@$$(cat bin/.digest | awk -F "[, ]+" '/Digest/{print $$NF}')
 
 .PHONY: docs
 docs:
