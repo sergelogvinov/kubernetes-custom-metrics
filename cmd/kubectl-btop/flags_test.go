@@ -22,10 +22,8 @@ func TestResolveEnvironment_EnvAppliesWhenFlagNotSet(t *testing.T) {
 
 	err := o.ResolveEnvironment(noneChanged, lookupEnvFrom(map[string]string{
 		envWindow:         "1h",
-		envWatchInterval:  "10s",
 		envRequestTimeout: "1m",
 		envNamespace:      "prod",
-		envSortBy:         "cpu",
 		envOutput:         "json",
 		envContext:        "kind-dev",
 	}))
@@ -39,7 +37,6 @@ func TestResolveEnvironment_EnvAppliesWhenFlagNotSet(t *testing.T) {
 		Namespace:      "prod",
 		SortBy:         "cpu",
 		Output:         "json",
-		WatchInterval:  10 * time.Second,
 		RequestTimeout: time.Minute,
 		Context:        "kind-dev",
 	}
@@ -55,7 +52,6 @@ func TestResolveEnvironment_FlagOnlyFieldsIgnoreEnv(t *testing.T) {
 		"STAT":       "p95",
 		"SELECTOR":   "app=web",
 		"NO_HEADERS": "true",
-		"WATCH":      "true",
 	}))
 	if err != nil {
 		t.Fatalf("ResolveEnvironment() error = %v", err)
@@ -66,11 +62,10 @@ func TestResolveEnvironment_FlagOnlyFieldsIgnoreEnv(t *testing.T) {
 		Stat:           defaultStat,
 		SortBy:         defaultSortBy,
 		Output:         defaultOutput,
-		WatchInterval:  defaultWatchInterval,
 		RequestTimeout: defaultRequestTimeout,
 	}
 	if *o != want {
-		t.Errorf("ResolveEnvironment() = %+v, want Stat/Selector/NoHeaders/Watch to stay at their flag defaults, got %+v", *o, want)
+		t.Errorf("ResolveEnvironment() = %+v, want Stat/Selector/NoHeaders to stay at their flag defaults, got %+v", *o, want)
 	}
 }
 
@@ -94,7 +89,7 @@ func TestResolveEnvironment_MalformedEnvIsRejected(t *testing.T) {
 		name string
 		env  map[string]string
 	}{
-		{"duration", map[string]string{envWatchInterval: "not-a-duration"}},
+		{"duration", map[string]string{envRequestTimeout: "not-a-duration"}},
 	}
 
 	for _, tt := range tests {
@@ -133,11 +128,17 @@ func TestValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{"defaults are valid", func(*Options) {}, false},
-		{"bad window", func(o *Options) { o.Window = "3m" }, true},
+		{"bad window", func(o *Options) { o.Window = "not-a-window" }, true},
+		{"zero window", func(o *Options) { o.Window = "0m" }, true},
+		{"negative window", func(o *Options) { o.Window = "-5m" }, true},
+		{"window below 1m minimum", func(o *Options) { o.Window = "30s" }, true},
+		{"window exactly 1m minimum is valid", func(o *Options) { o.Window = "1m" }, false},
+		{"arbitrary window 26m is valid", func(o *Options) { o.Window = "26m" }, false},
+		{"arbitrary window 34m is valid", func(o *Options) { o.Window = "34m" }, false},
+		{"arbitrary window 2h is valid", func(o *Options) { o.Window = "2h" }, false},
 		{"bad stat", func(o *Options) { o.Stat = "median" }, true},
 		{"bad sort-by", func(o *Options) { o.SortBy = "age" }, true},
 		{"bad output", func(o *Options) { o.Output = "xml" }, true},
-		{"watch-interval below minimum", func(o *Options) { o.WatchInterval = time.Second }, true},
 		{"zero request-timeout", func(o *Options) { o.RequestTimeout = 0 }, true},
 		{"negative request-timeout", func(o *Options) { o.RequestTimeout = -1 }, true},
 	}

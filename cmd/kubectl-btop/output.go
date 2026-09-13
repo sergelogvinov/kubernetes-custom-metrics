@@ -43,7 +43,7 @@ func renderRows(stdout io.Writer, o *Options, desc resourceDescriptor, joined []
 // default; metric-gateway.md §6.2).
 func sortRows(rows []joinedRow, sortBy string) {
 	switch sortBy {
-	case "cpu":
+	case "cpu": //nolint:goconst
 		slices.SortFunc(rows, func(a, b joinedRow) int {
 			if c := b.CPU.Cmp(a.CPU); c != 0 {
 				return c
@@ -51,7 +51,7 @@ func sortRows(rows []joinedRow, sortBy string) {
 
 			return compareIdentity(a, b)
 		})
-	case "memory":
+	case "memory": //nolint:goconst
 		slices.SortFunc(rows, func(a, b joinedRow) int {
 			if c := b.Memory.Cmp(a.Memory); c != 0 {
 				return c

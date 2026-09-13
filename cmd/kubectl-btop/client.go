@@ -29,18 +29,6 @@ type cancelTransport struct {
 	ctx context.Context
 }
 
-func (t *cancelTransport) bind(ctx context.Context) (unbind func()) {
-	t.mu.Lock()
-	t.ctx = ctx
-	t.mu.Unlock()
-
-	return func() {
-		t.mu.Lock()
-		t.ctx = nil
-		t.mu.Unlock()
-	}
-}
-
 func (t *cancelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.mu.Lock()
 	ctx := t.ctx
@@ -51,6 +39,18 @@ func (t *cancelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	return t.base.RoundTrip(req.WithContext(ctx))
+}
+
+func (t *cancelTransport) bind(ctx context.Context) (unbind func()) {
+	t.mu.Lock()
+	t.ctx = ctx
+	t.mu.Unlock()
+
+	return func() {
+		t.mu.Lock()
+		t.ctx = nil
+		t.mu.Unlock()
+	}
 }
 
 // Client is btop's thin lifecycle adapter around the standard custom-metrics

@@ -31,7 +31,7 @@ func TestCancelTransport_CancelsInFlightRoundTrip(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		req, err := http.NewRequest(http.MethodGet, "http://example.invalid", nil)
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://example.invalid", nil)
 		if err != nil {
 			done <- err
 
@@ -56,7 +56,7 @@ func TestCancelTransport_CancelsInFlightRoundTrip(t *testing.T) {
 			t.Errorf("RoundTrip() error = %v, want context.Canceled", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("RoundTrip did not return after the bound context was cancelled")
+		t.Fatal("RoundTrip did not return after the bound context was canceled")
 	}
 }
 
@@ -90,6 +90,6 @@ func TestCancelTransport_UnbindStopsUsingTheOldContext(t *testing.T) {
 	}
 
 	if base.gotCtx != reqCtx { //nolint:staticcheck // identity comparison is the point of the test
-		t.Error("RoundTrip() used the previously bound (now cancelled) context after unbind; want the request's own context")
+		t.Error("RoundTrip() used the previously bound (now canceled) context after unbind; want the request's own context")
 	}
 }
