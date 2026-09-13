@@ -79,14 +79,14 @@ dockers_v2:
       io.artifacthub.package.readme-url: "https://raw.githubusercontent.com/sergelogvinov/{{ .ProjectName }}/main/README.md"
       io.artifacthub.package.license: "Apache-2.0"
 
-# docker_signs:
-#   - id: docker
-#     cmd: cosign
-#     args:
-#       - sign
-#       - "--yes"
-#       - "${artifact}"
-#     output: true
+docker_signs:
+  - id: custom-metrics
+    cmd: cosign
+    args:
+      - sign
+      - "--yes"
+      - "${artifact}"
+    output: true
 
 checksum:
   ids:
@@ -94,13 +94,13 @@ checksum:
   name_template: checksums.txt
   algorithm: sha256
 
-# signs:
-#   - artifacts: checksum
-#     signature: "${artifact}.sigstore.json"
-#     cmd: cosign
-#     args:
-#       - sign-blob
-#       - "--yes"
-#       - "--bundle=${signature}"
-#       - "${artifact}"
-#     output: true
+signs:
+  - artifacts: checksum
+    signature: "${artifact}.sigstore.json"
+    cmd: cosign
+    args:
+      - sign-blob
+      - "--yes"
+      - "--bundle=${signature}"
+      - "${artifact}"
+    output: true
