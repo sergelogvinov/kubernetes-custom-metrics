@@ -1,0 +1,394 @@
+---
+# Source: kubernetes-custom-metrics/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubernetes-custom-metrics
+  labels:
+    helm.sh/chart: kubernetes-custom-metrics-0.0.1
+    app.kubernetes.io/name: kubernetes-custom-metrics
+    app.kubernetes.io/instance: kubernetes-custom-metrics
+    app.kubernetes.io/version: "v0.0.1"
+    app.kubernetes.io/managed-by: Helm
+automountServiceAccountToken: true
+
+---
+# Source: kubernetes-custom-metrics/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kubernetes-custom-metrics
+  labels:
+    helm.sh/chart: kubernetes-custom-metrics-0.0.1
+    app.kubernetes.io/name: kubernetes-custom-metrics
+    app.kubernetes.io/instance: kubernetes-custom-metrics
+    app.kubernetes.io/version: "v0.0.1"
+    app.kubernetes.io/managed-by: Helm
+data:
+
+---
+# Source: kubernetes-custom-metrics/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-custom-metrics
+  labels:
+    helm.sh/chart: kubernetes-custom-metrics-0.0.1
+    app.kubernetes.io/name: kubernetes-custom-metrics
+    app.kubernetes.io/instance: kubernetes-custom-metrics
+    app.kubernetes.io/version: "v0.0.1"
+    app.kubernetes.io/managed-by: Helm
+data:
+  catalog.yaml: |
+    bases:
+      cpu:
+        series: container_cpu_usage_seconds_total
+        unit: cores
+        scope: pod
+        aggregation: sum-then-stat
+      memory:
+        series: container_memory_working_set_bytes
+        unit: bytes
+        scope: pod
+        aggregation: sum-then-stat
+      node_cpu:
+        series: node_cpu_usage_cores
+        unit: cores
+        scope: node
+        aggregation: sum-then-stat
+      node_memory:
+        series: node_memory_used_bytes
+        unit: bytes
+        scope: node
+        aggregation: sum-then-stat
+
+---
+# Source: kubernetes-custom-metrics/templates/cluster-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubernetes-custom-metrics
+  labels:
+    helm.sh/chart: kubernetes-custom-metrics-0.0.1
+    app.kubernetes.io/name: kubernetes-custom-metrics
+    app.kubernetes.io/instance: kubernetes-custom-metrics
+    app.kubernetes.io/version: "v0.0.1"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups:
+    - ""
+    resources:
+    - nodes
+    - namespaces
+    - pods
+    - services
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - apps
+    resources:
+    - daemonsets
+    - deployments
+    - statefulsets
+    verbs:
+    - get
+    - list
+  - apiGroups:
+    - batch
+    resources:
+    - cronjobs
+    - jobs
+    verbs:
+    - get
+    - list
+
+---
+# Source: kubernetes-custom-metrics/templates/cluster-role-binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubernetes-custom-metrics
+  labels:
+    helm.sh/chart: kubernetes-custom-metrics-0.0.1
+    app.kubernetes.io/name: kubernetes-custom-metrics
+    app.kubernetes.io/instance: kubernetes-custom-metrics
+    app.kubernetes.io/version: "v0.0.1"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubernetes-custom-metrics
+subjects:
+  - kind: ServiceAccount
+    name: kubernetes-custom-metrics
+    namespace: kube-system
+
+---
+# Source: kubernetes-custom-metrics/templates/cluster-role-binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubernetes-custom-metrics:auth-delegator
+  labels:
+    helm.sh/chart: kubernetes-custom-metrics-0.0.1
+    app.kubernetes.io/name: kubernetes-custom-metrics
+    app.kubernetes.io/instance: kubernetes-custom-metrics
+    app.kubernetes.io/version: "v0.0.1"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: kubernetes-custom-metrics
+    namespace: kube-system
+
+---
+# Source: kubernetes-custom-metrics/templates/cluster-role-binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubernetes-custom-metrics:auth-reader
+  labels:
+    helm.sh/chart: kubernetes-custom-metrics-0.0.1
+    app.kubernetes.io/name: kubernetes-custom-metrics
+    app.kubernetes.io/instance: kubernetes-custom-metrics
+    app.kubernetes.io/version: "v0.0.1"
+    app.kubernetes.io/managed-by: Helm
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+  - kind: ServiceAccount
+    name: kubernetes-custom-metrics
+    namespace: kube-system
+
+---
+# Source: kubernetes-custom-metrics/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubernetes-custom-metrics
+  labels:
+    helm.sh/chart: kubernetes-custom-metrics-0.0.1
+    app.kubernetes.io/name: kubernetes-custom-metrics
+    app.kubernetes.io/instance: kubernetes-custom-metrics
+    app.kubernetes.io/version: "v0.0.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ipFamilies:
+    - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+    - port: 443
+      targetPort: https
+      protocol: TCP
+      name: https
+  selector:
+    app.kubernetes.io/name: kubernetes-custom-metrics
+    app.kubernetes.io/instance: kubernetes-custom-metrics
+
+---
+# Source: kubernetes-custom-metrics/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubernetes-custom-metrics
+  labels:
+    helm.sh/chart: kubernetes-custom-metrics-0.0.1
+    app.kubernetes.io/name: kubernetes-custom-metrics
+    app.kubernetes.io/instance: kubernetes-custom-metrics
+    app.kubernetes.io/version: "v0.0.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 1
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubernetes-custom-metrics
+      app.kubernetes.io/instance: kubernetes-custom-metrics
+  template:
+    metadata:
+      annotations:
+        checksum/config: b034db67c2bedc89e3e4167109f035fb33bb3f5086acf3596813b9ca8fb11d82
+      labels:
+        helm.sh/chart: kubernetes-custom-metrics-0.0.1
+        app.kubernetes.io/name: kubernetes-custom-metrics
+        app.kubernetes.io/instance: kubernetes-custom-metrics
+        app.kubernetes.io/version: "v0.0.1"
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      enableServiceLinks: false
+      serviceAccountName: kubernetes-custom-metrics
+      securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 65532
+        runAsUser: 65532
+      containers:
+        - name: kubernetes-custom-metrics
+          securityContext:
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 65532
+          image: "ghcr.io/sergelogvinov/kubernetes-custom-metrics:edge"
+          imagePullPolicy: Always
+          args:
+            - --secure-port=6443
+            # - --cert-dir=/var/run/certs
+            - --tls-cert-file=/var/run/certs/tls.crt
+            - --tls-private-key-file=/var/run/certs/tls.key
+          ports:
+            - name: https
+              containerPort: 6443
+              protocol: TCP
+          #
+          #
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/custom-metrics
+              readOnly: false
+            - name: certs
+              mountPath: /var/run/certs
+              readOnly: false
+            - name: tmpfs
+              mountPath: /tmp
+              readOnly: false
+      volumes:
+        - name: config
+          configMap:
+            name: kubernetes-custom-metrics
+        - name: certs
+          # emptyDir: {}
+          secret:
+            secretName: kubernetes-custom-metrics-tls
+        - name: tmpfs
+          emptyDir: {}
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: kubernetes-custom-metrics
+                    app.kubernetes.io/instance: kubernetes-custom-metrics
+                namespaces:
+                  - "kube-system"
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/control-plane
+
+---
+# Source: kubernetes-custom-metrics/templates/api.yaml
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1beta2.custom.metrics.k8s.io
+  annotations:
+    cert-manager.io/inject-ca-from: kube-system/kubernetes-custom-metrics-tls
+spec:
+  group: custom.metrics.k8s.io
+  version: v1beta2
+  service:
+    name: kubernetes-custom-metrics
+    namespace: kube-system
+    port: 443
+  groupPriorityMinimum: 100
+  versionPriority: 100
+  insecureSkipTLSVerify: false
+
+---
+# Source: kubernetes-custom-metrics/templates/certificate.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: kubernetes-custom-metrics-ca
+  labels:
+    helm.sh/chart: kubernetes-custom-metrics-0.0.1
+    app.kubernetes.io/name: kubernetes-custom-metrics
+    app.kubernetes.io/instance: kubernetes-custom-metrics
+    app.kubernetes.io/version: "v0.0.1"
+    app.kubernetes.io/managed-by: Helm
+  namespace: kube-system
+spec:
+  secretName: kubernetes-custom-metrics-ca
+  duration: 87600h # 10y
+  issuerRef:
+    group: cert-manager.io
+    kind: Issuer
+    name: kubernetes-custom-metrics
+  commonName: ca.webhook.kubernetes-custom-metrics
+  isCA: true
+  usages:
+    - digital signature
+    - key encipherment
+    - cert sign
+
+---
+# Source: kubernetes-custom-metrics/templates/certificate.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: kubernetes-custom-metrics-tls
+  labels:
+    helm.sh/chart: kubernetes-custom-metrics-0.0.1
+    app.kubernetes.io/name: kubernetes-custom-metrics
+    app.kubernetes.io/instance: kubernetes-custom-metrics
+    app.kubernetes.io/version: "v0.0.1"
+    app.kubernetes.io/managed-by: Helm
+  namespace: kube-system
+spec:
+  secretName: kubernetes-custom-metrics-tls
+  duration: 8760h # 1y
+  issuerRef:
+    group: cert-manager.io
+    kind: Issuer
+    name: kubernetes-custom-metrics
+  dnsNames:
+    - kubernetes-custom-metrics
+    - kubernetes-custom-metrics.kube-system
+    - kubernetes-custom-metrics.kube-system.svc
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+    - client auth
+
+---
+# Source: kubernetes-custom-metrics/templates/certificate.yaml
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: kubernetes-custom-metrics
+  labels:
+    helm.sh/chart: kubernetes-custom-metrics-0.0.1
+    app.kubernetes.io/name: kubernetes-custom-metrics
+    app.kubernetes.io/instance: kubernetes-custom-metrics
+    app.kubernetes.io/version: "v0.0.1"
+    app.kubernetes.io/managed-by: Helm
+  namespace: kube-system
+spec:
+  selfSigned: {}

@@ -13,6 +13,8 @@ GO_LDFLAGS  := -ldflags "-w -s -X main.version=$(TAG) -X main.commit=$(SHA)"
 GOOS        ?= $(shell go env GOOS)
 GOARCH      ?= $(shell go env GOARCH)
 
+COSING_ARGS ?=
+
 ############
 
 # Help Menu
@@ -102,3 +104,37 @@ test-rules: ## Run promtool against normalized recording-rule fixtures
 .PHONY: licenses
 licenses: ## Check licenses of all dependencies
 	go-licenses check ./... --disallowed_types=forbidden,restricted,unknown
+
+############
+#
+# Helm Abstractions
+#
+
+.PHONY: helm-unit
+helm-unit: ## Helm Unit Tests
+	@helm lint charts/kubernetes-custom-metrics
+	@helm template -f charts/kubernetes-custom-metrics/ci/values.yaml kubernetes-custom-metrics charts/kubernetes-custom-metrics >/dev/null
+
+.PHONY: helm-login
+helm-login: ## Helm Login
+	@echo "${HELM_TOKEN}" | helm registry login $(REGISTRY) --username $(USERNAME) --password-stdin
+
+.PHONY: helm-release
+helm-release: ## Helm Release
+	@rm -rf dist/
+	@helm package charts/kubernetes-custom-metrics -d dist
+	@helm push dist/kubernetes-custom-metrics-*.tgz oci://$(HELMREPO) 2>&1 | tee dist/.digest
+	@cosign sign --yes $(COSING_ARGS) $(HELMREPO)/kubernetes-custom-metrics@$$(cat dist/.digest | awk -F "[, ]+" '/Digest/{print $$NF}')
+
+.PHONY: docs
+docs:
+	helm version
+	yq -i '.appVersion = "$(TAG)"' charts/kubernetes-custom-metrics/Chart.yaml
+	helm template -n kube-system kubernetes-custom-metrics \
+		-f charts/kubernetes-custom-metrics/values.edge.yaml \
+		charts/kubernetes-custom-metrics > docs/deploy/kubernetes-custom-metrics.yml
+	helm template -n kube-system kubernetes-custom-metrics \
+		--set-string image.tag=$(TAG) \
+		--set createNamespace=true \
+		charts/kubernetes-custom-metrics > docs/deploy/kubernetes-custom-metrics-release.yml
+	helm-docs --sort-values-order=file charts/kubernetes-custom-metrics
