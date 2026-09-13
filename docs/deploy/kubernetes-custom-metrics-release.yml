@@ -235,8 +235,8 @@ spec:
             readOnlyRootFilesystem: false
             runAsNonRoot: true
             runAsUser: 65532
-          image: "ghcr.io/sergelogvinov/kubernetes-custom-metrics:edge"
-          imagePullPolicy: Always
+          image: "ghcr.io/sergelogvinov/kubernetes-custom-metrics:v0.1.0"
+          imagePullPolicy: IfNotPresent
           args:
             - --secure-port=6443
             # - --cert-dir=/var/run/certs
@@ -275,8 +275,6 @@ spec:
             secretName: kubernetes-custom-metrics-tls
         - name: tmpfs
           emptyDir: {}
-      nodeSelector:
-        node-role.kubernetes.io/control-plane: ""
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -289,9 +287,6 @@ spec:
                   - "kube-system"
                 topologyKey: kubernetes.io/hostname
               weight: 1
-      tolerations:
-        - effect: NoSchedule
-          key: node-role.kubernetes.io/control-plane
 ---
 # Source: kubernetes-custom-metrics/templates/api.yaml
 apiVersion: apiregistration.k8s.io/v1
