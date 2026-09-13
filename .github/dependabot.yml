@@ -1,5 +1,4 @@
 ---
-
 # See https://docs.github.com/en/github/administering-a-repository/configuration-options-for-dependency-updates
 
 version: 2
@@ -7,7 +6,8 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     commit-message:
-      prefix: "chore:"
+      prefix: "chore"
+      include: "scope"
     open-pull-requests-limit: 8
     rebase-strategy: disabled
     schedule:
@@ -18,7 +18,8 @@ updates:
   - package-ecosystem: "gomod"
     directory: "/"
     commit-message:
-      prefix: "chore:"
+      prefix: "chore"
+      include: "scope"
     open-pull-requests-limit: 8
     rebase-strategy: disabled
     schedule:
