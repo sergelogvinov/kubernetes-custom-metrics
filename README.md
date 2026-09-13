@@ -13,7 +13,7 @@ Making historical metrics available through the Kubernetes API (custom.metrics.k
 ## Goals
 
 - Provide time windowed CPU and memory metrics such as max, average, and min, from Prometheus compatible backends.
-- Support Pods and higher-level workloads.
+- Support Pods and higher-level workloads like Deployments, StatefulSets, DaemonSets  CronJobs.
 - Expose them via Custom Metrics API.
 - Provide a kubectl plugin with a top-like feel for quick checks.
 

@@ -21,9 +21,8 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/apimachinery/pkg/runtime/schema"
-
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/catalog"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 //go:embed testdata/catalog.yaml

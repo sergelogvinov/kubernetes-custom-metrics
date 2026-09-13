@@ -76,6 +76,8 @@ linters:
         - err
     cyclop:
       max-complexity: 30
+    exhaustive:
+      default-signifies-exhaustive: true
     dupl:
       threshold: 150
     errcheck:
@@ -132,6 +134,7 @@ linters:
           - bodyclose
           - exhaustruct_v5
           - errcheck
+          - revive
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0

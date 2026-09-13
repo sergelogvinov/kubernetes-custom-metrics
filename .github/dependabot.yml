@@ -26,11 +26,8 @@ updates:
       day: "monday"
       time: "07:00"
     groups:
-      k8s.io:
+      main:
         patterns:
-          - "k8s.io/api"
-          - "k8s.io/apimachinery"
-          - "k8s.io/client-go"
-          - "k8s.io/cloud-provider"
-          - "k8s.io/component-base"
-          - "k8s.io/mount-utils"
+          - "k8s.io/*"
+          - "sigs.k8s.io/custom-metrics-apiserver"
+          - "github.com/prometheus/*"

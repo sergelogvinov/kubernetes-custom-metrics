@@ -22,9 +22,8 @@ import (
 	"testing"
 	"time"
 
-	clocktesting "k8s.io/utils/clock/testing"
-
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/cache"
+	clocktesting "k8s.io/utils/clock/testing"
 )
 
 // testValue is the synthetic Result stand-in this package's tests use

@@ -15,14 +15,13 @@ Status: revised design, not yet implemented. This revision supersedes the previo
 | 5 | Cache TTL | `window ≤ 1h → 15s`, `window > 1h → 10m` |
 | 6 | Resource scope | Pods, Nodes, Deployments, StatefulSets, DaemonSets, Jobs, CronJobs |
 | 7 | CronJob with no active Jobs | **Fallback lookup over 1-day window**; if still empty → `404` |
-| 8 | Watch mode | In scope for v1 |
 | 9 | Configuration | CLI flags + env vars |
 | 10 | API groups | `custom.metrics.k8s.io` only |
 | 11 | `btop` JSON output | **Flattened** `{name, namespace, cpu, memory}` shape |
 | 12 | Distribution | **Raw binary** (no Krew/Homebrew in v1) |
 | 13 | Authorization | Built on `sigs.k8s.io/custom-metrics-apiserver`'s standard aggregated-apiserver pattern: delegated authentication (front-proxy or direct token) plus **delegated authorization — the gateway issues a SubjectAccessReview per request** against kube-apiserver; ServiceAccount used only for backend resource reads, never for authorization; no caller impersonation |
 | 14 | Historical membership | Retained objects selected at query time, not a complete historical ownership ledger |
-| 15 | Deferred features | Temporal `sum`, per-container output, and server-side watch |
+| 15 | Deferred features | Temporal `sum`, per-container output |
 
 ---
 
@@ -36,9 +35,9 @@ Status: revised design, not yet implemented. This revision supersedes the previo
 | :--- | :--- |
 | `base` | `cpu`, `memory`, `node_cpu`, `node_memory` |
 | `stat` | `avg`, `max`, `min`, `p50`, `p90`, `p95`, `p99`, `stddev` |
-| `window` | `1m`, `5m`, `15m`, `1h`, `6h`, `12h`, `24h` |
+| `window` | Any Go-duration-syntax string of at least `1m` (e.g. `26m`, `34m`, `2h`), not just the canonical windows below |
 
-There are **4 × 8 × 7 = 224 distinct metric names**. `cpu` and `memory` apply to the six namespaced resources; `node_cpu` and `node_memory` apply only to Nodes. Discovery therefore contains **(6 × 2 + 1 × 2) × 8 × 7 = 784 resource/metric entries**. The discovery cap counts entries, not distinct names. Unsupported base/resource combinations are not advertised and return `404`.
+`window` accepts any duration of `1m` or longer that `time.ParseDuration` parses, not a fixed enum — the metric-name parser validates it by attempting that parse and checking the minimum, not by membership in a list. Sub-minute windows are rejected: the normalized recording rules/subqueries evaluate on a fixed grid and CPU input is already a five-minute-smoothed rate, so anything shorter carries too few grid points to mean anything. Seven windows — `1m`, `5m`, `15m`, `1h`, `6h`, `12h`, `24h` — are the **canonical, discoverable** set: the only ones enumerated in `custom.metrics.k8s.io` discovery output. A non-canonical window like `cpu_avg_26m` still resolves correctly when queried directly (as `kubectl btop` does); it just isn't advertised. Discovery therefore contains **(6 × 2 + 1 × 2) × 8 × 7 = 784 resource/metric entries** for the canonical set. The discovery cap counts entries, not distinct names. Unsupported base/resource combinations are not advertised and return `404`.
 
 Temporal `sum` is deferred: `sum_over_time` adds samples and depends on resolution; it is neither CPU-seconds nor a meaningful memory-usage quantity. Spatial sums across containers/pods remain part of aggregation.
 
@@ -67,15 +66,17 @@ Default strategy: **sum-then-stat** — at each evaluation step, sum all selecte
 Illustrative query against the normalized series contract in §8 (coverage validation is additional):
 
 ```promql
-avg_over_time((sum(pod_cpu_usage_cores{cluster="example",namespace="prod",uid=~"uid-a|uid-b"}))[1h:15s])
+avg_over_time((sum(pod_cpu_usage_cores{cluster="example",namespace="prod",pod=~"web-0|web-1"}))[1h:60s])
 ```
+
+The `cluster` matcher is omitted entirely (not matched against an empty value) when `--cluster` is unset.
 
 Do not retain `pod` in the workload sum, and do not sum per-pod quantiles afterward. For **stat-then-sum**, apply the temporal statistic separately to each pod, then sum those values; it is deliberately a different statistic. Pod inputs already sum application containers. Node inputs already aggregate CPU cores/memory into one value per node.
 
 Temporal definitions:
 
 - CPU input is a five-minute rate expressed in cores; memory input is a gauge expressed in bytes. A `1m` CPU window describes five-minute-smoothed rates sampled over the last minute, not instantaneous peaks.
-- Normalized recording rules and subqueries use a fixed 15-second grid. Source scrape interval must be at most 15 seconds. CPU needs at least five minutes of source history before the requested window; backend retention must cover at least 24h plus that warm-up.
+- Normalized recording rules and subqueries use a fixed 60-second grid. Source scrape interval must be at most 60 seconds. CPU needs at least five minutes of source history before the requested window; backend retention must cover at least 24h plus that warm-up.
 - `avg`, `max`, `min`, and population `stddev` use the corresponding Prometheus `_over_time` functions. Quantiles use `quantile_over_time`; short-window p99 is an interpolated small-sample estimate, not a high-confidence tail estimate.
 - All supported statistics retain the input unit. CPU quantities use DecimalSI, rounded up to millicores; memory uses BinarySI, rounded up to whole bytes. Reject negative, nonfinite, and overflowing results rather than clamping them.
 - Query time is captured once per computation and aligned to the last fully completed grid step. All subqueries and coverage checks for that computation use this time.
@@ -88,15 +89,15 @@ Per-base override remains available in the catalog (`aggregation: sum-then-stat 
 
 | Resource | Selector source | Notes |
 | :--- | :--- | :--- |
-| Pod | API GET/list → UID | Names identify API objects; UIDs identify metric series |
-| Node | API GET/list → UID | Explicit node-exporter to Kubernetes identity mapping |
+| Pod | API GET/list → name | Names identify both API objects and metric series (`pod` label) |
+| Node | API GET/list → name | Explicit node-exporter to Kubernetes identity mapping (`node` label) |
 | Deployment | `apps/v1` full `spec.selector` → retained Pods | Includes `matchExpressions` |
 | StatefulSet | `apps/v1` full `spec.selector` → retained Pods | Includes `matchExpressions` |
 | DaemonSet | `apps/v1` full `spec.selector` → retained Pods | Includes `matchExpressions` |
 | Job | `batch/v1` full `spec.selector` → retained Pods | Includes `matchExpressions` |
 | **CronJob** | **Active Jobs → their selectors** | See §3.4 |
 
-All lookups use the gateway ServiceAccount. Selectors are evaluated by Kubernetes when listing Pods, not inserted as arbitrary labels into resource-metric PromQL. Union results by Pod UID, so overlapping selectors never double count. Constrain every backend query by the configured cluster, namespace where applicable, and exact escaped UIDs; an empty selection must never become an unrestricted query.
+All lookups use the gateway ServiceAccount. Selectors are evaluated by Kubernetes when listing Pods, not inserted as arbitrary labels into resource-metric PromQL. Union results by Pod name, so overlapping selectors never double count (Pod names are unique within a namespace at any point in time). Constrain every backend query by the configured cluster (when `--cluster` is set), namespace where applicable, and exact escaped pod/node names; an empty selection must never become an unrestricted query. A Pod or Node recreated with the same name inherits its predecessor's history in Prometheus — matching is by name, not UID, so v1 does not distinguish successive incarnations that reuse a name.
 
 v1 answers for **retained membership at query time**. It does not reconstruct deleted Pods, previous label assignments, or previous objects with the same name. Retained completed Pods can contribute historical samples. Operators requiring historical Job metrics must retain Jobs and Pods for the required lookback; Kubernetes Job/Pod cleanup can make data inaccessible even if Prometheus retains it. Completeness checks cover the selected retained set, not deleted membership. A complete historical ownership ledger is out of scope.
 
@@ -147,7 +148,7 @@ Wildcard `*` on workloads returns a list of single aggregated values.
 
 ### 3.7 Coverage and freshness
 
-The normalized input contract (§8) includes historical expected-member and completeness signals, not just usage. Require one valid sample for every expected active member at every 15-second evaluation point in the requested window. Distinguish explicitly inactive members from missing telemetry; missing completeness signals are failures, not inactivity. Reject windows with gaps rather than summing a silently reduced set. Validate historical coverage before aggregation, including container coverage inside normalized pod values.
+The normalized input contract (§8) includes historical expected-member and completeness signals, not just usage. Require one valid sample for every expected active member at every 60-second evaluation point in the requested window. Distinguish explicitly inactive members from missing telemetry; missing completeness signals are failures, not inactivity. Reject windows with gaps rather than summing a silently reduced set. Validate historical coverage before aggregation, including container coverage inside normalized pod values.
 
 An active member's underlying source sample must be no older than 30 seconds at the relevant grid point. Recording-rule evaluation time alone is not source freshness; normalization must gate on source timestamps and successful scrapes. Completed retained members may legitimately have only historical active intervals. If no members were active anywhere in the window, the metric is absent (`404` for named requests).
 
@@ -171,7 +172,7 @@ An active member's underlying source sample must be no older than 30 seconds at 
 
 ### Tier 2 — Singleflight
 
-`golang.org/x/sync/singleflight` collapses concurrent identical queries. Critical for `btop --watch` fan-out and HPA storms.
+`golang.org/x/sync/singleflight` collapses concurrent identical queries. Critical for HPA storms and any other burst of identical concurrent requests.
 
 Each waiter can cancel independently. Shared work has a server-owned context bounded by `--request-timeout` and server shutdown, not the first caller's context; one disconnected caller must not cancel other waiters. Bound shared work and waiting requests separately (§6.3). Cache and singleflight are process-local; replicas can compute independently and return different evaluation timestamps within the TTL contract.
 
@@ -213,7 +214,7 @@ Gateway-specific flags, defined by this repository and following the CLI-over-en
 
 | Flag | Env Var | Default | Purpose |
 | :--- | :--- | :--- | :--- |
-| `--cluster` | `CLUSTER` | — | Required exact backend cluster label |
+| `--cluster` | `CLUSTER` | — | Exact backend cluster label; omitted from the query entirely when unset |
 | `--prometheus-url` | `PROMETHEUS_URL` | — | Backend endpoint |
 | `--prometheus-timeout` | `PROMETHEUS_TIMEOUT` | `10s` | Per-query timeout |
 | `--prometheus-max-conns` | `PROMETHEUS_MAX_CONNS` | `100` | Connection pool |
@@ -229,7 +230,6 @@ Gateway-specific flags, defined by this repository and following the CLI-over-en
 | `--cache-max-bytes` | `CACHE_MAX_BYTES` | `67108864` | Accounted cache byte cap |
 | `--catalog-path` | `CATALOG_PATH` | `/etc/gateway/catalog.yaml` | Catalog mount |
 | `--cronjob-fallback-window` | `CRONJOB_FALLBACK` | `24h` | Recent-Job lookback |
-| `--log-level` | `LOG_LEVEL` | `info` | |
 | `--discovery-max-metrics` | `DISCOVERY_MAX` | `1000` | Resource/metric entry cap |
 
 TLS verification is never disabled for Prometheus; reject URLs containing userinfo and do not forward credentials across redirects.
@@ -247,6 +247,7 @@ Serving, authentication, authorization, and Kubernetes-access flags are **not** 
 | `--lister-kubeconfig` | kubeconfig for the resolver's dynamic client/RESTMapper (defaults to in-cluster config, i.e. the gateway ServiceAccount) |
 | `--discovery-interval` | Refresh interval for the dynamic RESTMapper |
 | `--client-qps` / `--client-burst` | Client-side throttle for the lister client |
+| `--v` | Standard klog verbosity (e.g. `--v=4` for debug-level output); `generic-apiserver`, `client-go`, and this gateway's own backend-query logging all log through klog |
 
 `/metrics` is authorized through the same delegated chain as resource routes (§5); there are no separate `--metrics-client-ca-file`/`--metrics-client-names` flags.
 
@@ -254,20 +255,18 @@ Serving, authentication, authorization, and Kubernetes-access flags are **not** 
 
 | Flag | Env Var | Default | Purpose |
 | :--- | :--- | :--- | :--- |
-| `--window` | `WINDOW` | `5m` | Statistical window |
+| `--window` | `WINDOW` | `5m` | Statistical window; any Go duration of at least `1m` (e.g. `26m`, `2h`), not just the canonical presets |
 | `--stat` | — | `avg` | Statistic |
 | `--selector` / `-l` | — | — | Label selector |
 | `--namespace` / `-n` | `NAMESPACE` | ctx ns | |
 | `--no-headers` | — | `false` | |
 | `--sort-by` | `SORT_BY` | `name` | `cpu`, `memory`, `name` |
 | `--output` / `-o` | `OUTPUT` | `table` | `table`, `json`, `yaml` |
-| `--watch` / `-w` | — | `false` | |
-| `--watch-interval` | `WATCH_INTERVAL` | `5s` | |
 | `--request-timeout` | `REQUEST_TIMEOUT` | `35s` | Bound discovery and metric HTTP requests |
 | `--kubeconfig` | `KUBECONFIG` | — | |
 | `--context` | `CONTEXT` | — | |
 
-`--stat`, `--selector`, `--no-headers`, and `--watch` are flag-only and have no environment variable. Resolve explicit flags before parsing overridden environment values: an invalid env value must not defeat a valid explicit flag. Reject malformed effective values. `KUBECONFIG` retains client-go's path-list merging behavior; only an explicit `--kubeconfig` becomes an explicit single-file override. Reject namespace flags on nodes and `--selector` together with a named object. `--containers` is deferred and rejected in v1; aggregate pod metrics cannot be decomposed by the client.
+`--stat`, `--selector`, and `--no-headers` are flag-only and have no environment variable. Resolve explicit flags before parsing overridden environment values: an invalid env value must not defeat a valid explicit flag. Reject malformed effective values. `KUBECONFIG` retains client-go's path-list merging behavior; only an explicit `--kubeconfig` becomes an explicit single-file override. Reject namespace flags on nodes and `--selector` together with a named object. `--containers` is deferred and rejected in v1; aggregate pod metrics cannot be decomposed by the client.
 
 ### 6.3 Work and memory budgets
 
@@ -276,7 +275,7 @@ Serving, authentication, authorization, and Kubernetes-access flags are **not** 
 - By default at most 16 backend queries run concurrently per process; at most four per shared computation is a fixed v1 limit. All queueing, Kubernetes listing, coverage checks and backend queries count toward the total deadline (default 30 seconds). The per-query timeout (default 10 seconds) is additionally enforced. No automatic backend retries in v1.
 - Fixed v1 safety limits: 500 target objects, 5,000 selected Pods, 1 MiB rendered query, 16 MiB decompressed backend response and 8 MiB encoded API response. Enforce limits while reading/listing, not after unbounded accumulation. Over-budget requests fail with `413` (`RequestEntityTooLarge`) rather than truncating results. Configure the backend with a query sample limit as well; normalized input and concurrency limits do not bound Prometheus's internal execution memory.
 - Kubernetes lists use bounded pages and propagate contexts. A single oversized selection is not split into independently aggregated results: doing so would corrupt quantiles and other nonlinear statistics.
-- No server watch flag exists: polling is ordinary GET traffic. `btop` enforces a minimum interval of two seconds locally, but server admission limits apply to every client, including HPA.
+- No server watch flag exists: every request is ordinary GET traffic subject to the same server admission limits, including HPA's periodic polling.
 
 ---
 
@@ -285,13 +284,13 @@ Serving, authentication, authorization, and Kubernetes-access flags are **not** 
 ### 7.1 Command Surface
 
 ```
-kubectl btop pods         [NAME] [-n NS] [-l SEL] [--window] [--stat] [-w]
-kubectl btop nodes        [NAME]        [-l SEL] [--window] [--stat] [-w]
-kubectl btop deployments  [NAME] [-n NS] [-l SEL] [--window] [--stat] [-w]
-kubectl btop statefulsets [NAME] [-n NS] [-l SEL] [--window] [--stat] [-w]
-kubectl btop daemonsets   [NAME] [-n NS] [-l SEL] [--window] [--stat] [-w]
-kubectl btop jobs         [NAME] [-n NS] [-l SEL] [--window] [--stat] [-w]
-kubectl btop cronjobs     [NAME] [-n NS] [-l SEL] [--window] [--stat] [-w]
+kubectl btop pods         [NAME] [-n NS] [-l SEL] [--window] [--stat]
+kubectl btop nodes        [NAME]        [-l SEL] [--window] [--stat]
+kubectl btop deployments  [NAME] [-n NS] [-l SEL] [--window] [--stat]
+kubectl btop statefulsets [NAME] [-n NS] [-l SEL] [--window] [--stat]
+kubectl btop daemonsets   [NAME] [-n NS] [-l SEL] [--window] [--stat]
+kubectl btop jobs         [NAME] [-n NS] [-l SEL] [--window] [--stat]
+kubectl btop cronjobs     [NAME] [-n NS] [-l SEL] [--window] [--stat]
 ```
 
 ### 7.2 Table Output
@@ -330,32 +329,11 @@ For nodes, `namespace` is omitted. For workloads, `name` is the workload name.
 
 YAML output mirrors the same shape.
 
-Rows include only objects with both CPU and memory values. Join by group/resource, namespace, name and UID; different incarnations must never be paired. A mismatched set fails a non-watch command without writing a partial document. Both empty lists produce `[]`. Sort CPU/memory numerically descending, with namespace/name tie-breaks; `name` sorts ascending. Diagnostics go to stderr. Exit codes: `0` success or clean watch quit, `2` usage/configuration error, `1` API/data/output error.
+Rows include only objects with both CPU and memory values. Join by group/resource, namespace, name and UID; different incarnations must never be paired. A mismatched set fails the command without writing a partial document. Both empty lists produce `[]`. Sort CPU/memory numerically descending, with namespace/name tie-breaks; `name` sorts ascending. Diagnostics go to stderr. Exit codes: `0` success, `2` usage/configuration error, `1` API/data/output error.
 
-Retain timestamps internally. Different CPU/memory timestamps are allowed because the API provides no atomic multi-metric snapshot; report their evaluation range/age on stderr (and in the watch status) rather than presenting a refresh time as measurement time. Do not rewrite timestamps or bypass the cache by varying selectors. A conforming external custom-metrics server must also expose this project's metric naming/unit contract for `btop` to work; protocol conformance alone is insufficient.
+Retain timestamps internally. Different CPU/memory timestamps are allowed because the API provides no atomic multi-metric snapshot; report their evaluation range/age on stderr rather than presenting a refresh time as measurement time. Do not rewrite timestamps or bypass the cache by varying selectors. A conforming external custom-metrics server must also expose this project's metric naming/unit contract for `btop` to work; protocol conformance alone is insufficient.
 
-### 7.4 Watch Mode
-
-`kubectl btop pods -w` renders a live-updating table:
-
-- Poll at `--watch-interval` (default 5s, minimum 2s); never overlap refreshes, skip missed ticks, and respect `Retry-After`.
-- TTY table output uses an ANSI alternate screen with terminal state restored on every exit. Header includes refresh time and the measurement evaluation range/age. `q` / `Ctrl-C` quits cleanly.
-- Unix resize handling uses SIGWINCH; Windows uses the terminal library's resize support. Platform-specific signal code must be build-tagged. If terminal features are unavailable, fall back to non-TTY rendering.
-- Non-TTY table mode emits timestamped table blocks per refresh, with no cursor controls. JSON emits one compact array per line (NDJSON snapshots); YAML emits `---`-separated documents. Structured output never enters alternate-screen mode or writes status text to stdout.
-- On refresh failure, retain but visibly mark the last TTY snapshot stale; non-TTY modes emit a stderr diagnostic and no data snapshot for that refresh. Clear stale state only after a successful refresh. Failures before the first snapshot exit `1`; subsequent transient `429`/`503`/`504` errors may retry at the next eligible interval. Permanent errors exit `1`.
-
-```
-btop — pods (avg, 5m) — ns: prod — 10:42:03
-──────────────────────────────────────────────
-NAMESPACE   NAME      CPU          MEMORY
-prod        web-0     187m         412Mi
-prod        web-1     203m         428Mi
-prod        api-0     88m          156Mi
-──────────────────────────────────────────────
-refreshing every 5s · q to quit
-```
-
-### 7.5 Distribution
+### 7.4 Distribution
 
 **Raw binary only in v1.** Release artifacts:
 - `btop-linux-amd64`, `btop-linux-arm64`
@@ -390,11 +368,11 @@ cert-manager and the Prometheus Operator CRDs are optional integrations, not unc
 
 v1 consumes deployment-supplied normalized recording rules, not arbitrary raw cAdvisor/node-exporter layouts. Shipping tested rules/fixtures for at least one supported scrape setup is a release prerequisite; the catalog below is not a complete monitoring installation.
 
-- All series carry a required `cluster` label. Pod series carry `namespace`, `pod`, `uid`; node series carry `node`, `uid`. UID must identify the actual Kubernetes incarnation. Rules must preserve historical identity at recording time, not join historical name-only usage to today's metadata.
-- Emit exactly one usage series per identity and metric at each 15-second step. Select a single scrape source or explicitly deduplicate HA replicas before aggregation. Exclude root cgroups, empty container identities and pause containers. Include running application containers, native sidecars, init and ephemeral containers when they consume resources; sum only once per actual container identity.
+- Pod series carry `namespace`, `pod`; node series carry `node`. All series carry a `cluster` label when `--cluster` is configured — the gateway matches by name (`pod`/`node`), not by a synthetic `uid` label, so recording rules need not join `uid` in from `kube_pod_info` or similar. Because matching is by name, a Pod or Node recreated with the same name inherits its predecessor's history; v1 accepts that tradeoff in exchange for not requiring a `uid`-carrying join in every recording rule.
+- Emit exactly one usage series per identity and metric at each 60-second step. Select a single scrape source or explicitly deduplicate HA replicas before aggregation. Exclude root cgroups, empty container identities and pause containers. Include running application containers, native sidecars, init and ephemeral containers when they consume resources; sum only once per actual container identity.
 - `pod_cpu_usage_cores` is the sum of five-minute per-container counter rates (rate before sum); `pod_memory_working_set_bytes` is summed container working set.
 - `node_cpu_usage_cores` sums five-minute `node_cpu_seconds_total` rates over CPU cores and modes `user`, `nice`, `system`, `irq`, `softirq`, `steal`. Exclude idle, iowait and guest/guest_nice to avoid idle accounting and guest double counting. `node_memory_used_bytes` is `MemTotal - MemAvailable`, not kubelet working set. Node and pod memory therefore have explicitly different definitions.
-- Emit `pod_active` / `node_active` and `pod_cpu_complete`, `pod_memory_complete`, `node_cpu_complete`, `node_memory_complete`, with the corresponding identity labels. Active is 0/1 and complete is 1 only when expected-container coverage and source freshness hold; emit 0 for incomplete coverage. Missing signals are unknown, never implicitly inactive. Lifecycle signals cover each retained object's lifetime, including completed intervals; pre-creation times are known inactive from the object's creation timestamp. Missing post-creation lifecycle history makes the window unavailable.
+- Emit `pod_active` / `node_active` and `pod_cpu_complete`, `pod_memory_complete`, `node_complete`, with the corresponding identity labels. Node has a single `node_complete` series shared by both quantities — `node_cpu_usage_cores` and `node_memory_used_bytes` come from the same node-exporter scrape, so a separate `node_cpu_complete`/`node_memory_complete` pair would always be identical. Active is 0/1 and complete is 1 only when expected-container coverage and source freshness hold; emit 0 for incomplete coverage. Missing signals are unknown, never implicitly inactive. Lifecycle signals cover each retained object's lifetime, including completed intervals; pre-creation times are known inactive from the object's creation timestamp. Missing post-creation lifecycle history makes the window unavailable.
 - Validate these signals over the same historical grid as usage before computing a statistic. Backend warnings/partial responses, duplicate identities, and stale or missing expected inputs fail closed. Normalization must not mask missing containers by merely summing whichever samples are present.
 
 ### Catalog ConfigMap
@@ -502,12 +480,12 @@ GET /apis/custom.metrics.k8s.io/v1beta2/namespaces/prod/cronjobs.batch/nightly-b
 **In scope:**
 - Bases: `cpu`, `memory`, `node_cpu`, `node_memory`
 - Stats: `avg`, `max`, `min`, `p50`, `p90`, `p95`, `p99`, `stddev`
-- Windows: `1m`, `5m`, `15m`, `1h`, `6h`, `12h`, `24h`
+- Windows: any Go duration of at least `1m` (e.g. `26m`, `2h`); `1m`, `5m`, `15m`, `1h`, `6h`, `12h`, `24h` are the canonical, discoverable set
 - Resources: pods, nodes, deployments, statefulsets, daemonsets, jobs, cronjobs
 - Single aggregated value per workload; per-node list for node wildcards
 - CronJob 1-day fallback with 404 on empty
 - Tier-1 + Tier-2 cache with window-driven TTL
-- `btop` plugin with watch mode and flattened JSON
+- `btop` plugin with flattened JSON output (one-shot snapshot only, no watch mode)
 - Raw binary distribution
 - Delegated authentication and delegated (SAR-based) authorization via `sigs.k8s.io/custom-metrics-apiserver`, ServiceAccount resolution
 - Normalized recording-rule inputs with identity, coverage and freshness validation
@@ -528,4 +506,4 @@ Before release, deliver and test:
 6. **Normalized recording rules and numerical fixtures** — at least one supported scrape setup, including node mapping, lifecycle, completeness, historical gaps and duplicate-source tests.
 7. **Security integration tests** — delegated-authentication rejection of untrusted/spoofed identity, request-header CA/name rotation, delegated-authorization (SAR) denial for callers lacking `custom.metrics.k8s.io` RBAC, and successful metric reads by users lacking underlying resource permissions on cache hits and misses.
 
-Deferred: temporal `sum`, per-container API/output, complete historical ownership reconstruction, direct-client gateway authorization, and server-side watch. These require explicit contracts rather than silent approximations.
+Deferred: temporal `sum`, per-container API/output, complete historical ownership reconstruction, direct-client gateway authorization, client-side `btop` watch mode, and server-side watch. These require explicit contracts rather than silent approximations.

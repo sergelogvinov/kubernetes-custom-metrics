@@ -1,0 +1,294 @@
+rule_files:
+  - rules.yaml
+
+evaluation_interval: 15s
+
+tests:
+  # --- pod_cpu_usage_cores: rate-before-sum across two containers ---------
+  - interval: 15s
+    input_series:
+      - series: 'container_cpu_usage_seconds_total{namespace="prod",pod="web-0",container="app",image="nginx:1"}'
+        values: "0+1.5x80"
+      - series: 'container_cpu_usage_seconds_total{namespace="prod",pod="web-0",container="sidecar",image="envoy:1"}'
+        values: "0+0.75x80"
+    promql_expr_test:
+      - expr: pod_cpu_usage_cores
+        eval_time: 5m
+        exp_samples:
+          - labels: 'pod_cpu_usage_cores{cluster="example",namespace="prod",pod="web-0"}'
+            value: 0.15
+
+  # --- pod_memory_working_set_bytes: sum of container gauges --------------
+  - interval: 15s
+    input_series:
+      - series: 'container_memory_working_set_bytes{namespace="prod",pod="web-0",container="app",image="nginx:1"}'
+        values: "100x10"
+      - series: 'container_memory_working_set_bytes{namespace="prod",pod="web-0",container="sidecar",image="envoy:1"}'
+        values: "50x10"
+    promql_expr_test:
+      - expr: pod_memory_working_set_bytes
+        eval_time: 1m
+        exp_samples:
+          - labels: 'pod_memory_working_set_bytes{cluster="example",namespace="prod",pod="web-0"}'
+            value: 150
+
+  # --- root cgroup / pause container / empty-image exclusion --------------
+  - interval: 15s
+    input_series:
+      - series: 'container_cpu_usage_seconds_total{namespace="prod",pod="web-0",container="",image=""}'
+        values: "0+10x80"
+      - series: 'container_cpu_usage_seconds_total{namespace="prod",pod="web-0",container="POD",image=""}'
+        values: "0+10x80"
+      - series: 'container_cpu_usage_seconds_total{namespace="prod",pod="web-0",container="app",image="nginx:1"}'
+        values: "0+1.5x80"
+    promql_expr_test:
+      - expr: pod_cpu_usage_cores
+        eval_time: 5m
+        exp_samples:
+          - labels: 'pod_cpu_usage_cores{cluster="example",namespace="prod",pod="web-0"}'
+            value: 0.09999999999999999
+
+  # --- duplicate scrape source dedup: same container via two jobs ---------
+  - interval: 15s
+    input_series:
+      - series: 'container_cpu_usage_seconds_total{namespace="prod",pod="web-0",container="app",image="nginx:1",job="cadvisor-a"}'
+        values: "0+1.5x80"
+      - series: 'container_cpu_usage_seconds_total{namespace="prod",pod="web-0",container="app",image="nginx:1",job="cadvisor-b"}'
+        values: "0+1.5x80"
+    promql_expr_test:
+      # Without dedup this would sum to 0.2 (both duplicate sources
+      # counted); the rule must collapse them to the single true value.
+      - expr: pod_cpu_usage_cores
+        eval_time: 5m
+        exp_samples:
+          - labels: 'pod_cpu_usage_cores{cluster="example",namespace="prod",pod="web-0"}'
+            value: 0.09999999999999999
+
+  # --- missing-container detection: pod_cpu_complete -----------------------
+  - interval: 15s
+    input_series:
+      - series: 'container_cpu_usage_seconds_total{namespace="prod",pod="web-0",container="app",image="nginx:1"}'
+        values: "0+1.5x80"
+      - series: 'kube_pod_container_status_running{namespace="prod",pod="web-0",container="app"}'
+        values: "1+0x80"
+      - series: 'kube_pod_container_status_running{namespace="prod",pod="web-0",container="sidecar"}'
+        values: "1+0x80"
+    promql_expr_test:
+      # "sidecar" is expected (status_running=1) but has no cAdvisor series
+      # at all: coverage is incomplete.
+      - expr: pod_cpu_complete
+        eval_time: 5m
+        exp_samples:
+          - labels: 'pod_cpu_complete{cluster="example",namespace="prod",pod="web-0"}'
+            value: 0
+
+  - interval: 15s
+    input_series:
+      - series: 'container_cpu_usage_seconds_total{namespace="prod",pod="web-0",container="app",image="nginx:1"}'
+        values: "0+1.5x80"
+      - series: 'kube_pod_container_status_running{namespace="prod",pod="web-0",container="app"}'
+        values: "1+0x80"
+    promql_expr_test:
+      # Every expected running container has a matching usage series:
+      # coverage is complete.
+      - expr: pod_cpu_complete
+        eval_time: 5m
+        exp_samples:
+          - labels: 'pod_cpu_complete{cluster="example",namespace="prod",pod="web-0"}'
+            value: 1
+
+  - interval: 15s
+    input_series:
+      - series: 'kube_pod_container_status_running{namespace="prod",pod="web-0",container="app"}'
+        values: "1+0x80"
+    promql_expr_test:
+      # No cAdvisor data reached this Prometheus at all for the pod: this is
+      # "unknown", not an explicit 0 — the series must not exist.
+      - expr: pod_cpu_complete
+        eval_time: 5m
+        exp_samples: []
+
+  # --- pod_active lifecycle -------------------------------------------------
+  - interval: 15s
+    input_series:
+      - series: 'kube_pod_status_phase{namespace="prod",pod="web-0",phase="Pending"}'
+        values: "1 1 0x8"
+      - series: 'kube_pod_status_phase{namespace="prod",pod="web-0",phase="Running"}'
+        values: "0 0 1x8"
+    promql_expr_test:
+      - expr: pod_active
+        eval_time: 15s
+        exp_samples:
+          - labels: 'pod_active{cluster="example",namespace="prod",pod="web-0"}'
+            value: 0
+      - expr: pod_active
+        eval_time: 1m
+        exp_samples:
+          - labels: 'pod_active{cluster="example",namespace="prod",pod="web-0"}'
+            value: 1
+
+  # --- pod_active survives a momentarily missing kube_pod_info -------------
+  # Regression fixture: an earlier revision of this rule set joined in
+  # kube_pod_info solely to attach a "uid" label the gateway no longer
+  # needs. That join was an inner join — a delayed/missing kube_pod_info
+  # row (KSM restart, scrape lag, relabeling mismatch) silently dropped
+  # pod_active for an actively-reporting, genuinely Running pod. There is
+  # no kube_pod_info series at all in this fixture; pod_active must still
+  # be produced from kube_pod_status_phase alone.
+  - interval: 15s
+    input_series:
+      - series: 'kube_pod_status_phase{namespace="kube-system",pod="coredns-5656d85497-kkkkm",phase="Running"}'
+        values: "1x10"
+      - series: 'container_cpu_usage_seconds_total{namespace="kube-system",pod="coredns-5656d85497-kkkkm",container="coredns",image="coredns:1"}'
+        values: "0+1.5x80"
+    promql_expr_test:
+      - expr: pod_active
+        eval_time: 1m
+        exp_samples:
+          - labels: 'pod_active{cluster="example",namespace="kube-system",pod="coredns-5656d85497-kkkkm"}'
+            value: 1
+
+  # --- node_cpu_usage_cores: mode exclusion (idle/iowait/guest*) ----------
+  - interval: 15s
+    input_series:
+      - series: 'node_cpu_seconds_total{instance="worker-1",cpu="0",mode="user"}'
+        values: "0+1.5x80"
+      - series: 'node_cpu_seconds_total{instance="worker-1",cpu="0",mode="system"}'
+        values: "0+0.75x80"
+      - series: 'node_cpu_seconds_total{instance="worker-1",cpu="0",mode="idle"}'
+        values: "0+10x80"
+      - series: 'node_cpu_seconds_total{instance="worker-1",cpu="0",mode="iowait"}'
+        values: "0+3x80"
+      - series: 'node_cpu_seconds_total{instance="worker-1",cpu="0",mode="guest"}'
+        values: "0+2x80"
+      - series: 'node_cpu_seconds_total{instance="worker-1",cpu="0",mode="guest_nice"}'
+        values: "0+2x80"
+    promql_expr_test:
+      # Only user+system count: (0.1+0.05) cores/s. idle/iowait/guest* excluded.
+      - expr: node_cpu_usage_cores
+        eval_time: 5m
+        exp_samples:
+          - labels: 'node_cpu_usage_cores{cluster="example",node="worker-1"}'
+            value: 0.15
+
+  # --- node CPU/memory duplicate scrape source dedup -----------------------
+  - interval: 15s
+    input_series:
+      - series: 'node_cpu_seconds_total{instance="worker-1",cpu="0",mode="user",job="node-exporter-a"}'
+        values: "0+1.5x80"
+      - series: 'node_cpu_seconds_total{instance="worker-1",cpu="0",mode="user",job="node-exporter-b"}'
+        values: "0+1.5x80"
+    promql_expr_test:
+      # Without dedup this would sum to 0.2 (both duplicate sources counted).
+      - expr: node_cpu_usage_cores
+        eval_time: 5m
+        exp_samples:
+          - labels: 'node_cpu_usage_cores{cluster="example",node="worker-1"}'
+            value: 0.09999999999999999
+
+  # --- node_memory_used_bytes: MemTotal - MemAvailable ---------------------
+  - interval: 15s
+    input_series:
+      - series: 'node_memory_MemTotal_bytes{instance="worker-1"}'
+        values: "16000000000x10"
+      - series: 'node_memory_MemAvailable_bytes{instance="worker-1"}'
+        values: "6000000000x10"
+    promql_expr_test:
+      - expr: node_memory_used_bytes
+        eval_time: 1m
+        exp_samples:
+          - labels: 'node_memory_used_bytes{cluster="example",node="worker-1"}'
+            value: 10000000000
+
+  # --- node_active / node_*_complete freshness ------------------------------
+  - interval: 15s
+    input_series:
+      - series: 'kube_node_status_condition{node="worker-1",condition="Ready",status="true"}'
+        values: "1x10"
+      - series: 'kube_node_status_condition{node="worker-1",condition="Ready",status="false"}'
+        values: "0x10"
+      - series: 'up{job="node-exporter",instance="worker-1"}'
+        values: "1x10"
+    promql_expr_test:
+      - expr: node_active
+        eval_time: 1m
+        exp_samples:
+          - labels: 'node_active{cluster="example",node="worker-1"}'
+            value: 1
+      - expr: node_complete
+        eval_time: 1m
+        exp_samples:
+          - labels: 'node_complete{cluster="example",node="worker-1"}'
+            value: 1
+
+  - interval: 15s
+    input_series:
+      - series: 'up{job="node-exporter",instance="worker-1"}'
+        values: "0x10"
+    promql_expr_test:
+      # node-exporter scrape is failing: freshness signals go explicitly 0,
+      # not simply absent, since the target and identity are known.
+      - expr: node_complete
+        eval_time: 1m
+        exp_samples:
+          - labels: 'node_complete{cluster="example",node="worker-1"}'
+            value: 0
+
+  # --- illustrative aggregation-strategy fixtures (metric-gateway.md §3.2) -
+  # These prove the normalized contract above is expressive enough to
+  # support both workload aggregation strategies with numerically distinct
+  # results; internal/prometheus (T4) renders the real gateway PromQL.
+  - interval: 15s
+    input_series:
+      # Alternating peaks: web-0 runs hot (1 core) for the first 10 minutes
+      # then cools to 0.1 core; web-1 does the reverse. sum-then-stat (max of
+      # the combined sum, over time) and stat-then-sum (sum of the two
+      # per-pod maxes) must diverge — one workload is never at 2 cores at
+      # once, but each pod individually peaks near 1 core.
+      - series: 'container_cpu_usage_seconds_total{namespace="prod",pod="web-0",container="app",image="nginx:1"}'
+        values: "0+15x39 585+1.5x40"
+      - series: 'container_cpu_usage_seconds_total{namespace="prod",pod="web-1",container="app",image="nginx:1"}'
+        values: "0+1.5x39 58.5+15x40"
+    promql_expr_test:
+      # sum-then-stat: max_over_time(sum(pod_cpu_usage_cores)[20m:15s]). The
+      # combined workload value stays near 1.1 cores throughout — the two
+      # pods trade off, they are never both hot together.
+      - expr: max_over_time((sum(pod_cpu_usage_cores{namespace="prod"}))[20m:15s])
+        eval_time: 19m45s
+        exp_samples:
+          - labels: '{}'
+            value: 1.0999999999999999
+      # stat-then-sum: sum(max_over_time(pod_cpu_usage_cores[20m:15s])). Each
+      # pod's own historical peak (~1 core) is summed instead, giving a
+      # deliberately different, larger total.
+      - expr: sum(max_over_time(pod_cpu_usage_cores{namespace="prod"}[20m:15s]))
+        eval_time: 19m45s
+        exp_samples:
+          - labels: '{}'
+            value: 1.9999999999999998
+
+  - interval: 15s
+    input_series:
+      # Fleet p95 (quantile across pods of their averages) versus summed
+      # pod p95 (p95 of the summed series) diverge when one pod dominates.
+      - series: 'container_cpu_usage_seconds_total{namespace="prod",pod="web-0",container="app",image="nginx:1"}'
+        values: "0+15x80"
+      - series: 'container_cpu_usage_seconds_total{namespace="prod",pod="web-1",container="app",image="nginx:1"}'
+        values: "0+1.5x80"
+    promql_expr_test:
+      # "Summed pod p95": p95 of the combined workload series (both pods run
+      # at a constant rate here, so the combined series is flat at 1.1).
+      # Evaluated late enough that the rate() warm-up period has passed.
+      - expr: quantile_over_time(0.95, (sum(pod_cpu_usage_cores{namespace="prod"}))[5m:15s])
+        eval_time: 19m45s
+        exp_samples:
+          - labels: '{}'
+            value: 1.0999999999999999
+      # "Fleet p95": p95 across the two pods' own values at a single point
+      # in time — a distinct statistic from the summed-then-quantiled one
+      # above.
+      - expr: quantile(0.95, pod_cpu_usage_cores{namespace="prod"})
+        eval_time: 19m45s
+        exp_samples:
+          - labels: '{}'
+            value: 0.9549999999999998

@@ -19,9 +19,8 @@ package cache_test
 import (
 	"testing"
 
-	"k8s.io/apimachinery/pkg/labels"
-
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/cache"
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 func TestHashSelector_OrderIndependent(t *testing.T) {

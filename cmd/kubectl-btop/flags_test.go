@@ -51,7 +51,7 @@ func TestResolveEnvironment_EnvAppliesWhenFlagNotSet(t *testing.T) {
 		Window:         "1h",
 		Stat:           defaultStat,
 		Namespace:      "prod",
-		SortBy:         "cpu",
+		SortBy:         defaultSortBy,
 		Output:         "json",
 		RequestTimeout: time.Minute,
 		Context:        "kind-dev",
@@ -68,6 +68,7 @@ func TestResolveEnvironment_FlagOnlyFieldsIgnoreEnv(t *testing.T) {
 		"STAT":       "p95",
 		"SELECTOR":   "app=web",
 		"NO_HEADERS": "true",
+		"SORT_BY":    "cpu",
 	}))
 	if err != nil {
 		t.Fatalf("ResolveEnvironment() error = %v", err)
@@ -81,7 +82,7 @@ func TestResolveEnvironment_FlagOnlyFieldsIgnoreEnv(t *testing.T) {
 		RequestTimeout: defaultRequestTimeout,
 	}
 	if *o != want {
-		t.Errorf("ResolveEnvironment() = %+v, want Stat/Selector/NoHeaders to stay at their flag defaults, got %+v", *o, want)
+		t.Errorf("ResolveEnvironment() = %+v, want Stat/Selector/SortBy/NoHeaders to stay at their flag defaults, got %+v", *o, want)
 	}
 }
 

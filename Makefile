@@ -63,17 +63,16 @@ build: ## Build
 	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) go build $(GO_LDFLAGS) \
 	-o bin/custom-metrics ./cmd/custom-metrics
 
+.PHONY: install
+install: build
+	cp ./bin/kubectl-btop ~/go/bin/kubectl-btop
+
 .PHONY: generate
 generate: ## Run controller-gen and other generators
-	controller-gen rbac:roleName=custom-metrics \
+	@rm -f docs/role.yaml
+	@controller-gen --load-build-tags= rbac:roleName=custom-metrics \
 		paths=./cmd/custom-metrics \
-		output:rbac:artifacts:config=deploy/base
-
-.PHONY: manifests
-manifests: ## Validate deployment YAML and RBAC policy
-	@test -f deploy/base/role.yaml || { echo "missing deploy/base/role.yaml; run make generate"; exit 1; }
-	@go run sigs.k8s.io/yaml@latest 2>/dev/null || true
-	@echo "manifests: deploy/base/role.yaml present"
+		output:rbac:artifacts:config=docs
 
 ############
 #
