@@ -48,7 +48,7 @@ bases:
 
 Everything lives under one top-level key, `bases`.
 Each entry—`cpu`, `memory`, `node_cpu`, or `node_memory`—is a **base metric**: a metric that
-`kubectl btop` and the `custom.metrics.k8s.io` API can report.
+`kubectl ctop` and the `custom.metrics.k8s.io` API can report.
 
 ## A Prometheus primer
 
@@ -226,5 +226,5 @@ Examples: `cpu_avg_5m`, `memory_max_1h`, `node_cpu_p95_12h`, `node_memory_min_24
 2. Roll out the change with `helm upgrade`.
    Remember: the gateway only reads this file at startup, so a ConfigMap update alone does nothing
    until the Pods restart.
-3. Check `kubectl btop deployments web -n prod` (or your equivalent) to confirm that the expected
+3. Check `kubectl ctop deployments web -n prod` (or your equivalent) to confirm that the expected
    metric names are listed.

@@ -8,7 +8,7 @@ Status: revised design, not yet implemented. This revision supersedes the previo
 
 | # | Decision | Value |
 | :--- | :--- | :--- |
-| 1 | Plugin name | **`btop`** (invoked as `kubectl btop`) |
+| 1 | Plugin name | **`ctop`** (invoked as `kubectl ctop`) |
 | 2 | Workload return shape | **Single aggregated value** per object |
 | 3 | Node wildcard return shape | **Per-node list** (one row per node) |
 | 4 | Base metrics | `cpu`, `memory`, `node_cpu`, `node_memory` — no `http_rps` |
@@ -17,7 +17,7 @@ Status: revised design, not yet implemented. This revision supersedes the previo
 | 7 | CronJob with no active Jobs | **Fallback lookup over 1-day window**; if still empty → `404` |
 | 9 | Configuration | CLI flags + env vars |
 | 10 | API groups | `custom.metrics.k8s.io` only |
-| 11 | `btop` JSON output | **Flattened** `{name, namespace, cpu, memory}` shape |
+| 11 | `ctop` JSON output | **Flattened** `{name, namespace, cpu, memory}` shape |
 | 12 | Distribution | **Raw binary** (no Krew/Homebrew in v1) |
 | 13 | Authorization | Built on `sigs.k8s.io/custom-metrics-apiserver`'s standard aggregated-apiserver pattern: delegated authentication (front-proxy or direct token) plus **delegated authorization — the gateway issues a SubjectAccessReview per request** against kube-apiserver; ServiceAccount used only for backend resource reads, never for authorization; no caller impersonation |
 | 14 | Historical membership | Retained objects selected at query time, not a complete historical ownership ledger |
@@ -37,7 +37,7 @@ Status: revised design, not yet implemented. This revision supersedes the previo
 | `stat` | `avg`, `max`, `min`, `p50`, `p90`, `p95`, `p99`, `stddev` |
 | `window` | Any Go-duration-syntax string of at least `1m` (e.g. `26m`, `34m`, `2h`), not just the canonical windows below |
 
-`window` accepts any duration of `1m` or longer that `time.ParseDuration` parses, not a fixed enum — the metric-name parser validates it by attempting that parse and checking the minimum, not by membership in a list. Sub-minute windows are rejected: the normalized recording rules/subqueries evaluate on a fixed grid and CPU input is already a five-minute-smoothed rate, so anything shorter carries too few grid points to mean anything. Seven windows — `1m`, `5m`, `15m`, `1h`, `6h`, `12h`, `24h` — are the **canonical, discoverable** set: the only ones enumerated in `custom.metrics.k8s.io` discovery output. A non-canonical window like `cpu_avg_26m` still resolves correctly when queried directly (as `kubectl btop` does); it just isn't advertised. Discovery therefore contains **(6 × 2 + 1 × 2) × 8 × 7 = 784 resource/metric entries** for the canonical set. The discovery cap counts entries, not distinct names. Unsupported base/resource combinations are not advertised and return `404`.
+`window` accepts any duration of `1m` or longer that `time.ParseDuration` parses, not a fixed enum — the metric-name parser validates it by attempting that parse and checking the minimum, not by membership in a list. Sub-minute windows are rejected: the normalized recording rules/subqueries evaluate on a fixed grid and CPU input is already a five-minute-smoothed rate, so anything shorter carries too few grid points to mean anything. Seven windows — `1m`, `5m`, `15m`, `1h`, `6h`, `12h`, `24h` — are the **canonical, discoverable** set: the only ones enumerated in `custom.metrics.k8s.io` discovery output. A non-canonical window like `cpu_avg_26m` still resolves correctly when queried directly (as `kubectl ctop` does); it just isn't advertised. Discovery therefore contains **(6 × 2 + 1 × 2) × 8 × 7 = 784 resource/metric entries** for the canonical set. The discovery cap counts entries, not distinct names. Unsupported base/resource combinations are not advertised and return `404`.
 
 Temporal `sum` is deferred: `sum_over_time` adds samples and depends on resolution; it is neither CPU-seconds nor a meaningful memory-usage quantity. Spatial sums across containers/pods remain part of aggregation.
 
@@ -251,7 +251,7 @@ Serving, authentication, authorization, and Kubernetes-access flags are **not** 
 
 `/metrics` is authorized through the same delegated chain as resource routes (§5); there are no separate `--metrics-client-ca-file`/`--metrics-client-names` flags.
 
-### 6.2 btop Flags / Env Vars
+### 6.2 ctop Flags / Env Vars
 
 | Flag | Env Var | Default | Purpose |
 | :--- | :--- | :--- | :--- |
@@ -279,35 +279,35 @@ Serving, authentication, authorization, and Kubernetes-access flags are **not** 
 
 ---
 
-## 7. `btop` Plugin
+## 7. `ctop` Plugin
 
 ### 7.1 Command Surface
 
 ```
-kubectl btop pods         [NAME] [-n NS] [-l SEL] [--window] [--stat]
-kubectl btop nodes        [NAME]        [-l SEL] [--window] [--stat]
-kubectl btop deployments  [NAME] [-n NS] [-l SEL] [--window] [--stat]
-kubectl btop statefulsets [NAME] [-n NS] [-l SEL] [--window] [--stat]
-kubectl btop daemonsets   [NAME] [-n NS] [-l SEL] [--window] [--stat]
-kubectl btop jobs         [NAME] [-n NS] [-l SEL] [--window] [--stat]
-kubectl btop cronjobs     [NAME] [-n NS] [-l SEL] [--window] [--stat]
+kubectl ctop pods         [NAME] [-n NS] [-l SEL] [--window] [--stat]
+kubectl ctop nodes        [NAME]        [-l SEL] [--window] [--stat]
+kubectl ctop deployments  [NAME] [-n NS] [-l SEL] [--window] [--stat]
+kubectl ctop statefulsets [NAME] [-n NS] [-l SEL] [--window] [--stat]
+kubectl ctop daemonsets   [NAME] [-n NS] [-l SEL] [--window] [--stat]
+kubectl ctop jobs         [NAME] [-n NS] [-l SEL] [--window] [--stat]
+kubectl ctop cronjobs     [NAME] [-n NS] [-l SEL] [--window] [--stat]
 ```
 
 ### 7.2 Table Output
 
 ```
-$ kubectl btop pods --window=5m --stat=p95
+$ kubectl ctop pods --window=5m --stat=p95
 NAMESPACE   NAME      CPU(p95,5m)   MEMORY(p95,5m)
 prod        web-0     187m          412Mi
 prod        web-1     203m          428Mi
 prod        api-0     88m           156Mi
 
-$ kubectl btop deployments -n prod --window=1h --stat=max
+$ kubectl ctop deployments -n prod --window=1h --stat=max
 NAMESPACE   NAME   CPU(max,1h)   MEMORY(max,1h)
 prod        web    412m          512Mi
 prod        api    210m          256Mi
 
-$ kubectl btop nodes --window=5m --stat=avg
+$ kubectl ctop nodes --window=5m --stat=avg
 NAME           CPU(avg,5m)   MEMORY(avg,5m)
 worker-1       2.4           12Gi
 worker-2       1.8           9Gi
@@ -331,17 +331,17 @@ YAML output mirrors the same shape.
 
 Rows include only objects with both CPU and memory values. Join by group/resource, namespace, name and UID; different incarnations must never be paired. A mismatched set fails the command without writing a partial document. Both empty lists produce `[]`. Sort CPU/memory numerically descending, with namespace/name tie-breaks; `name` sorts ascending. Diagnostics go to stderr. Exit codes: `0` success, `2` usage/configuration error, `1` API/data/output error.
 
-Retain timestamps internally. Different CPU/memory timestamps are allowed because the API provides no atomic multi-metric snapshot; report their evaluation range/age on stderr rather than presenting a refresh time as measurement time. Do not rewrite timestamps or bypass the cache by varying selectors. A conforming external custom-metrics server must also expose this project's metric naming/unit contract for `btop` to work; protocol conformance alone is insufficient.
+Retain timestamps internally. Different CPU/memory timestamps are allowed because the API provides no atomic multi-metric snapshot; report their evaluation range/age on stderr rather than presenting a refresh time as measurement time. Do not rewrite timestamps or bypass the cache by varying selectors. A conforming external custom-metrics server must also expose this project's metric naming/unit contract for `ctop` to work; protocol conformance alone is insufficient.
 
 ### 7.4 Distribution
 
 **Raw binary only in v1.** Release artifacts:
-- `btop-linux-amd64`, `btop-linux-arm64`
-- `btop-darwin-amd64`, `btop-darwin-arm64`
-- `btop-windows-amd64.exe`
+- `ctop-linux-amd64`, `ctop-linux-arm64`
+- `ctop-darwin-amd64`, `ctop-darwin-arm64`
+- `ctop-windows-amd64.exe`
 - SHA256 checksums + cosign signature
 
-Install: place on `$PATH` as `kubectl-btop`. Krew/Homebrew deferred to v2.
+Install: place on `$PATH` as `kubectl-ctop`. Krew/Homebrew deferred to v2.
 
 ---
 
@@ -408,7 +408,7 @@ All inputs are normalized gauges; raw counter handling belongs in recording rule
 ## 9. Request Flow — Workload Aggregated Value
 
 ```
-btop deployments web --window=1h --stat=p95 -n prod
+ctop deployments web --window=1h --stat=p95 -n prod
         │
         ▼
 GET /apis/custom.metrics.k8s.io/v1beta2/namespaces/prod/deployments.apps/web/cpu_p95_1h
@@ -452,7 +452,7 @@ GET /apis/custom.metrics.k8s.io/v1beta2/namespaces/prod/deployments.apps/web/cpu
 ## 10. CronJob Request Flow
 
 ```
-btop cronjobs nightly-batch --window=6h --stat=avg -n prod
+ctop cronjobs nightly-batch --window=6h --stat=avg -n prod
         │
         ▼
 GET /apis/custom.metrics.k8s.io/v1beta2/namespaces/prod/cronjobs.batch/nightly-batch/cpu_avg_6h
@@ -485,7 +485,7 @@ GET /apis/custom.metrics.k8s.io/v1beta2/namespaces/prod/cronjobs.batch/nightly-b
 - Single aggregated value per workload; per-node list for node wildcards
 - CronJob 1-day fallback with 404 on empty
 - Tier-1 + Tier-2 cache with window-driven TTL
-- `btop` plugin with flattened JSON output (one-shot snapshot only, no watch mode)
+- `ctop` plugin with flattened JSON output (one-shot snapshot only, no watch mode)
 - Raw binary distribution
 - Delegated authentication and delegated (SAR-based) authorization via `sigs.k8s.io/custom-metrics-apiserver`, ServiceAccount resolution
 - Normalized recording-rule inputs with identity, coverage and freshness validation
@@ -499,11 +499,11 @@ GET /apis/custom.metrics.k8s.io/v1beta2/namespaces/prod/cronjobs.batch/nightly-b
 Before release, deliver and test:
 
 1. **API contract document** — exact request/response schemas, error codes, discovery payload.
-2. **`btop` command reference** — every flag, every subcommand, exit codes, examples.
+2. **`ctop` command reference** — every flag, every subcommand, exit codes, examples.
 3. **Sequence diagrams** — pod, node, workload, CronJob-fallback, cache-hit, cache-miss.
 4. **Catalog schema** — formal YAML schema for base metric definitions.
 5. **RBAC manifests** — gateway read-only ClusterRole, `system:auth-delegator` binding, authentication-reader binding, and example HPA metric-reader bindings on `custom.metrics.k8s.io` (no caller resource-read requirement, but a real custom-metrics RBAC grant is required since it is what delegated authorization enforces per request).
 6. **Normalized recording rules and numerical fixtures** — at least one supported scrape setup, including node mapping, lifecycle, completeness, historical gaps and duplicate-source tests.
 7. **Security integration tests** — delegated-authentication rejection of untrusted/spoofed identity, request-header CA/name rotation, delegated-authorization (SAR) denial for callers lacking `custom.metrics.k8s.io` RBAC, and successful metric reads by users lacking underlying resource permissions on cache hits and misses.
 
-Deferred: temporal `sum`, per-container API/output, complete historical ownership reconstruction, direct-client gateway authorization, client-side `btop` watch mode, and server-side watch. These require explicit contracts rather than silent approximations.
+Deferred: temporal `sum`, per-container API/output, complete historical ownership reconstruction, direct-client gateway authorization, client-side `ctop` watch mode, and server-side watch. These require explicit contracts rather than silent approximations.

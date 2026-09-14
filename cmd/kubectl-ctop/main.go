@@ -65,7 +65,7 @@ func NewRootCommand() *cobra.Command {
 	opts := NewOptions()
 
 	cmd := &cobra.Command{
-		Use:           "btop",
+		Use:           "ctop",
 		Short:         "Show historical CPU and memory usage for Kubernetes workloads",
 		SilenceUsage:  true,
 		SilenceErrors: true,

@@ -69,7 +69,7 @@ func (t *cancelTransport) bind(ctx context.Context) (unbind func()) {
 	}
 }
 
-// Client is btop's thin lifecycle adapter around the standard custom-metrics
+// Client is ctop's thin lifecycle adapter around the standard custom-metrics
 // client (design.md §11.1 and §11.2's "this local lifecycle adapter is not a
 // competing public metrics client"). It owns kubeconfig loading, the
 // effective default namespace, and per-call cancellation.

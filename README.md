@@ -22,20 +22,20 @@ Making historical metrics available through the Kubernetes API (custom.metrics.k
 After installing the API server and the kubectl plugin, you can use the plugin to check historical CPU and memory usage for your workloads. For example:
 
 ```sh
-kubectl btop pods -n default
+kubectl ctop pods -n default
 ```
 
 You can also specify different time windows and metrics, such as:
 
 ```sh
-kubectl btop pods -n default --window=1h --stat=avg
-kubectl btop deployments -n default --window=24h --stat=max
+kubectl ctop pods -n default --window=1h --stat=avg
+kubectl ctop deployments -n default --window=24h --stat=max
 ```
 
 ## Installation
 
 The project has two parts: the custom metrics API server, which runs in the cluster, and the
-`kubectl btop` client plugin, which runs on your workstation.
+`kubectl ctop` client plugin, which runs on your workstation.
 
 ### Server
 
@@ -53,17 +53,17 @@ see [Configuration](charts/kubernetes-custom-metrics/README.md).
 
 ### kubectl plugin
 
-Install the `kubectl-btop` plugin with Homebrew:
+Install the `kubectl-ctop` plugin with Homebrew:
 
 ```sh
 brew tap sergelogvinov/tap
-brew install kubectl-btop
+brew install kubectl-ctop
 ```
 
 The plugin is then available through kubectl:
 
 ```sh
-kubectl btop pods -n default
+kubectl ctop pods -n default
 ```
 
 ## Contributing

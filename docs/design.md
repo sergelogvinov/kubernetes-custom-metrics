@@ -6,7 +6,7 @@ Status: proposed implementation layout for the revised v1 specification in [`met
 
 The repository produces two independent binaries from one Go module:
 
-- `cmd/kubectl-btop`: the client-side kubectl plugin, installed as `kubectl-btop` and invoked as `kubectl btop`.
+- `cmd/kubectl-ctop`: the client-side kubectl plugin, installed as `kubectl-ctop` and invoked as `kubectl ctop`.
 - `cmd/custom-metrics`: the in-cluster aggregated API server for `custom.metrics.k8s.io/v1beta2`.
 
 Baseline choices:
@@ -15,7 +15,7 @@ Baseline choices:
 - Kubernetes modules **v0.36.x**, kept at the same minor version (§14: pinned to match the latest `sigs.k8s.io/custom-metrics-apiserver` release).
 - [`sigs.k8s.io/custom-metrics-apiserver`](https://github.com/kubernetes-sigs/custom-metrics-apiserver) provides the generic-apiserver wiring for `cmd/custom-metrics`: `pkg/cmd.AdapterBase` supplies secure serving, delegated authentication, delegated authorization, discovery, OpenAPI, health endpoints, a discovery-backed dynamic client/RESTMapper, and route installation for the `custom.metrics.k8s.io` group. This repository implements `pkg/provider.CustomMetricsProvider` and wires it into `AdapterBase`, the same pattern used by [`kubernetes-sigs/prometheus-adapter`](https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/cmd/adapter/adapter.go). It does not reimplement generic-apiserver wiring, proxy authentication, or a public embeddable server facade — the upstream module already is that reusable facade, for this repository and for any other Go project that wants one.
 - [`github.com/spf13/pflag`](https://github.com/spf13/pflag) for flags.
-- [`github.com/spf13/cobra`](https://github.com/spf13/cobra) for command-line interface structure. Both `cmd/kubectl-btop` and `cmd/custom-metrics` build their commands as `*cobra.Command` trees returned by constructor functions — never a package-level `var rootCmd = &cobra.Command{}` populated by `init()`, which would reintroduce process-global state. `cmd/custom-metrics` registers `AdapterBase`'s flags onto the same `*pflag.FlagSet` cobra owns (`cmd.Flags()`), rather than letting the framework default to `pflag.CommandLine`.
+- [`github.com/spf13/cobra`](https://github.com/spf13/cobra) for command-line interface structure. Both `cmd/kubectl-ctop` and `cmd/custom-metrics` build their commands as `*cobra.Command` trees returned by constructor functions — never a package-level `var rootCmd = &cobra.Command{}` populated by `init()`, which would reintroduce process-global state. `cmd/custom-metrics` registers `AdapterBase`'s flags onto the same `*pflag.FlagSet` cobra owns (`cmd.Flags()`), rather than letting the framework default to `pflag.CommandLine`.
 - The metric grammar, resource scope, aggregation behavior, cache TTLs, CronJob fallback, output shapes, and authorization model remain defined by `metric-gateway.md`. This document only defines how to organize their implementation.
 - [`sigs.k8s.io/controller-tools/cmd/controller-gen`](https://github.com/kubernetes-sigs/controller-tools) generates the gateway `ClusterRole` from source markers.
 - Business logic does not import command packages, write directly to global streams, or depend on process-global flag sets.
@@ -26,7 +26,7 @@ Baseline choices:
 ```text
 .
 ├── cmd/
-│   ├── kubectl-btop/
+│   ├── kubectl-ctop/
 │   │   ├── main.go
 │   │   ├── resources.go        # resource descriptor table and per-resource subcommand factory
 │   │   ├── flags.go            # Options struct and env/default resolution
@@ -121,7 +121,7 @@ the upstream one.
 
 ```mermaid
 flowchart TD
-    btop[cmd/kubectl-btop] --> UpstreamClient[k8s.io/metrics custom-metrics client]
+    ctop[cmd/kubectl-ctop] --> UpstreamClient[k8s.io/metrics custom-metrics client]
     UpstreamClient --> CustomAPI[custom.metrics.k8s.io API]
 
     ServerMain[cmd/custom-metrics] --> AdapterBase[sigs.k8s.io/custom-metrics-apiserver pkg/cmd.AdapterBase]
@@ -140,11 +140,11 @@ flowchart TD
 
 Rules:
 
-1. `cmd/custom-metrics` contains process setup, flags, RBAC markers, and the `AdapterBase` wiring: constructing the gateway's `internal/gateway` provider and registering it with `adapterBase.WithCustomMetrics(...)`. `cmd/kubectl-btop` contains plugin-specific command and presentation code; neither command is imported by another package.
+1. `cmd/custom-metrics` contains process setup, flags, RBAC markers, and the `AdapterBase` wiring: constructing the gateway's `internal/gateway` provider and registering it with `adapterBase.WithCustomMetrics(...)`. `cmd/kubectl-ctop` contains plugin-specific command and presentation code; neither command is imported by another package.
 2. `internal/gateway/provider.go` implements `sigs.k8s.io/custom-metrics-apiserver/pkg/provider.CustomMetricsProvider` directly. There is no local provider-contract layer between it and the upstream interface, and no adapter package translating one provider contract into another.
 3. `internal/gateway` owns the use-case flow: parse metric, check cache, resolve target with the ServiceAccount, validate coverage, query Prometheus, convert result, and store cache. It may use `sigs.k8s.io/custom-metrics-apiserver/pkg/provider/helpers` (`ResourceFor`, `ReferenceFor`, `ListObjectNames`) and `pkg/provider` error constructors (`NewMetricNotFoundError` and friends) rather than re-deriving `schema.GroupVersionResource` lookups or hand-building every `metav1.Status` object.
 4. `pkg/catalog`, `internal/resolver`, `pkg/prometheus`, and `pkg/cache` do not import `sigs.k8s.io/custom-metrics-apiserver`'s `basecmd.AdapterBase` or any `cmd/custom-metrics` type, with two narrow, documented exceptions: `internal/resolver` may use `AdapterBase`'s dynamic client/RESTMapper accessors, passed in as plain `dynamic.Interface`/`meta.RESTMapper` values (§7); `pkg/catalog` imports the framework's data-only `pkg/provider` package for its `CustomMetricInfo` discovery type, since that is the type `provider.CustomMetricsProvider.ListAllMetrics` (§10) must return — a type dependency, not a dependency on the framework's serving/wiring machinery.
-5. `cmd/kubectl-btop` uses the standard `k8s.io/metrics/pkg/client/custom_metrics` client and must not call gateway internals. It communicates only through Kubernetes APIs. An external server must additionally expose the documented metric names and units; protocol conformance alone is not sufficient.
+5. `cmd/kubectl-ctop` uses the standard `k8s.io/metrics/pkg/client/custom_metrics` client and must not call gateway internals. It communicates only through Kubernetes APIs. An external server must additionally expose the documented metric names and units; protocol conformance alone is not sufficient.
 6. Kubernetes API objects stay near the server/client edges. Core orchestration uses small internal types, which keeps unit tests inexpensive.
 7. Gateway-specific collectors and readiness checks are constructed by `cmd/custom-metrics` and injected into the `apiserver.Config` obtained from `adapterBase.Config()` before calling `adapterBase.Server()`/`adapterBase.Run(ctx)` (§10). `internal/gateway` does not import `AdapterBase` or reach into generic-apiserver internals; it only implements the provider interface and exposes plain Go readiness functions that `cmd/custom-metrics` wires in.
 
@@ -169,15 +169,15 @@ func main() {
 }
 ```
 
-In the proposed flat `cmd/kubectl-btop` layout, `main.go` directly calls the package-local `run` function, which builds the `*cobra.Command` tree with `NewRootCommand(...)`, wires the injected `io.Reader`/`io.Writer`s with `cmd.SetIn`/`SetOut`/`SetErr`, sets `cmd.SetArgs(args)`, and calls `cmd.ExecuteContext(ctx)`. `cmd/custom-metrics/main.go` follows the same pattern with its own single-command tree; its `RunE` ultimately calls `adapterBase.Run(ctx)`, which itself calls `GenericAPIServer.PrepareRun().RunWithContext(ctx)` — generic-apiserver's own graceful-shutdown path drains in-flight requests when `ctx` is canceled. The gateway must additionally handle `SIGTERM` for Kubernetes shutdown; platform-specific signal handling belongs in build-tagged files. Cleanup must occur before `os.Exit`, which does not run deferred functions.
+In the proposed flat `cmd/kubectl-ctop` layout, `main.go` directly calls the package-local `run` function, which builds the `*cobra.Command` tree with `NewRootCommand(...)`, wires the injected `io.Reader`/`io.Writer`s with `cmd.SetIn`/`SetOut`/`SetErr`, sets `cmd.SetArgs(args)`, and calls `cmd.ExecuteContext(ctx)`. `cmd/custom-metrics/main.go` follows the same pattern with its own single-command tree; its `RunE` ultimately calls `adapterBase.Run(ctx)`, which itself calls `GenericAPIServer.PrepareRun().RunWithContext(ctx)` — generic-apiserver's own graceful-shutdown path drains in-flight requests when `ctx` is canceled. The gateway must additionally handle `SIGTERM` for Kubernetes shutdown; platform-specific signal handling belongs in build-tagged files. Cleanup must occur before `os.Exit`, which does not run deferred functions.
 
-Neither entry point uses `pflag.CommandLine` or a package-level `cobra.Command` populated by `init()`. Set `SilenceUsage` and `SilenceErrors` on every constructed command and print errors through the injected streams only. `run` maps the returned error to an exit code: a validation/usage error (flag parsing, `Args` rejection, `Options.Validate`) maps to `2`, any other error maps to `1`, matching the `btop` exit-code contract in `metric-gateway.md` §7.3. `cobra.Command.Execute`/`ExecuteContext` never calls `os.Exit` itself, so performing this mapping in `run` before the single `os.Exit` call in `main` is safe.
+Neither entry point uses `pflag.CommandLine` or a package-level `cobra.Command` populated by `init()`. Set `SilenceUsage` and `SilenceErrors` on every constructed command and print errors through the injected streams only. `run` maps the returned error to an exit code: a validation/usage error (flag parsing, `Args` rejection, `Options.Validate`) maps to `2`, any other error maps to `1`, matching the `ctop` exit-code contract in `metric-gateway.md` §7.3. `cobra.Command.Execute`/`ExecuteContext` never calls `os.Exit` itself, so performing this mapping in `run` before the single `os.Exit` call in `main` is safe.
 
 ## 5. Flag and environment design
 
 ### 5.1 Parsing
 
-Each binary builds a `*cobra.Command` tree; cobra owns flag parsing through its embedded `*pflag.FlagSet` (`cmd.Flags()` for the single-command `cmd/custom-metrics` binary, `cmd.PersistentFlags()` for the flags shared by every `kubectl-btop` resource subcommand). Cobra never calls `os.Exit`, so usage and parse errors surface as a returned `error` that `run` writes to the injected error stream (§4).
+Each binary builds a `*cobra.Command` tree; cobra owns flag parsing through its embedded `*pflag.FlagSet` (`cmd.Flags()` for the single-command `cmd/custom-metrics` binary, `cmd.PersistentFlags()` for the flags shared by every `kubectl-ctop` resource subcommand). Cobra never calls `os.Exit`, so usage and parse errors surface as a returned `error` that `run` writes to the injected error stream (§4).
 
 For `cmd/custom-metrics`, `command.go` constructs a `basecmd.AdapterBase`, sets `adapterBase.FlagSet = cmd.Flags()` before calling `adapterBase.InstallFlags()`, and separately registers the gateway-specific `Options` (§6.1 of `metric-gateway.md`: `--prometheus-url`, `--catalog-path`, `--cache-size`, `--cronjob-fallback-window`, and so on) onto the same `cmd.Flags()`. Both sets of flags parse together during `cmd.Execute()`; there is only one `*pflag.FlagSet` per process, owned by cobra.
 
@@ -221,9 +221,9 @@ Let client-go process the `KUBECONFIG` path list and file merging. Do not copy i
 
 Do not silently accept malformed durations, integers, booleans, statistics, windows, or output formats. Return an error naming the associated flag or environment variable.
 
-### 5.3 btop subcommands
+### 5.3 ctop subcommands
 
-`cmd/kubectl-btop` is a `cobra.Command` tree: a root `btop` command (registered with kubectl as `kubectl-btop`, invoked as `kubectl btop`) with one required subcommand per resource.
+`cmd/kubectl-ctop` is a `cobra.Command` tree: a root `ctop` command (registered with kubectl as `kubectl-ctop`, invoked as `kubectl ctop`) with one required subcommand per resource.
 
 1. The root command registers the flags shared by every resource (`--window`, `--stat`, `--selector`/`-l`, `--namespace`/`-n`, `--no-headers`, `--sort-by`, `--output`/`-o`, `--request-timeout`, `--kubeconfig`, `--context`) on `PersistentFlags()`, so every subcommand inherits them without re-registering.
 2. `resources.go` defines a small resource descriptor (canonical name, `Aliases`, and whether the resource is namespaced) for `pods`, `nodes`, `deployments`, `statefulsets`, `daemonsets`, `jobs`, and `cronjobs`. One `newResourceCommand(desc resourceDescriptor, deps) *cobra.Command` factory builds each subcommand from its descriptor. Cobra's `Use`/`Aliases`/`Short` fields replace a hand-rolled dispatch table, and cobra itself rejects an unknown or missing resource token.
@@ -374,7 +374,7 @@ Reload serving certificates and drain on SIGTERM remain requirements; `AdapterBa
 
 ## 11. Consuming custom metrics
 
-External clients and `kubectl-btop` use `k8s.io/metrics/pkg/client/custom_metrics` directly. It supports `rest.Config`, REST mapping, namespaced/root-scoped resources and both selector channels. In v0.37.0, the client exposes **v1beta2 Go result types**, converting v1beta2 wire responses as needed; serving only v1beta2 is compatible. Do not duplicate the upstream client or assume its in-memory types match the served wire version.
+External clients and `kubectl-ctop` use `k8s.io/metrics/pkg/client/custom_metrics` directly. It supports `rest.Config`, REST mapping, namespaced/root-scoped resources and both selector channels. In v0.37.0, the client exposes **v1beta2 Go result types**, converting v1beta2 wire responses as needed; serving only v1beta2 is compatible. Do not duplicate the upstream client or assume its in-memory types match the served wire version.
 
 Example:
 
@@ -392,13 +392,13 @@ value, err := client.NamespacedMetrics("prod").GetForObject(
 
 The constructor returns one client, not `(client, error)`; its third argument is an `AvailableAPIsGetter`, not a dynamic client. Construction may be lazy; handle errors on discovery and metric calls.
 
-The v0.37.0 metric methods accept no context and internally use `context.TODO()`. For `btop`, bound every HTTP call with `rest.Config.Timeout` and a private transport wrapper that combines the HTTP request context with the invocation context. Apply it to discovery and metric transports; clean up cancellation callbacks after each round trip. Do not mutate shared clients or use a goroutine that leaves unbounded calls running after cancellation. Test cancellation of a stalled HTTP server and subsequent terminal restoration. This local lifecycle adapter is not a competing public metrics client.
+The v0.37.0 metric methods accept no context and internally use `context.TODO()`. For `ctop`, bound every HTTP call with `rest.Config.Timeout` and a private transport wrapper that combines the HTTP request context with the invocation context. Apply it to discovery and metric transports; clean up cancellation callbacks after each round trip. Do not mutate shared clients or use a goroutine that leaves unbounded calls running after cancellation. Test cancellation of a stalled HTTP server and subsequent terminal restoration. This local lifecycle adapter is not a competing public metrics client.
 
 There is no reciprocal "embedding a custom-metrics API server" case for this repository to support (§2.1): that role belongs to `sigs.k8s.io/custom-metrics-apiserver` upstream, and this repository is simply one of its consumers.
 
-## 12. btop client flow
+## 12. ctop client flow
 
-`cmd/kubectl-btop` uses Kubernetes client configuration loading rules from `client-go`, with explicit `--kubeconfig` and `--context` overrides. It queries `cpu`/`memory` for namespaced resources and `node_cpu`/`node_memory` for Nodes. It preserves returned timestamps, windows and UIDs in an internal fetched-value model, joins by resource/namespace/name/UID, and only then emits the flat row model:
+`cmd/kubectl-ctop` uses Kubernetes client configuration loading rules from `client-go`, with explicit `--kubeconfig` and `--context` overrides. It queries `cpu`/`memory` for namespaced resources and `node_cpu`/`node_memory` for Nodes. It preserves returned timestamps, windows and UIDs in an internal fetched-value model, joins by resource/namespace/name/UID, and only then emits the flat row model:
 
 ```go
 type Row struct {
@@ -415,9 +415,9 @@ Keep fetching, joining, sorting, and rendering separate:
 - `collector.go` rejects mismatched sets/incarnations without emitting partial output; both empty lists produce an empty array. It retains evaluation timestamps and reports age/skew on stderr. The API does not offer an atomic CPU/memory snapshot.
 - `output.go` sorts quantities numerically, formats them, and produces stable table/JSON/YAML output. Machine output preserves the flat shape, so metadata diagnostics stay off stdout.
 
-`btop` is a one-shot snapshot tool: it fetches once, joins, and renders — no watch/refresh mode. `--containers` is deferred because the wire and row contracts expose only pod aggregates.
+`ctop` is a one-shot snapshot tool: it fetches once, joins, and renders — no watch/refresh mode. `--containers` is deferred because the wire and row contracts expose only pod aggregates.
 
-`cmd/kubectl-btop` is entirely unaffected by §10's framework adoption: it only ever speaks the `custom.metrics.k8s.io` wire protocol as a client, never the server side.
+`cmd/kubectl-ctop` is entirely unaffected by §10's framework adoption: it only ever speaks the `custom.metrics.k8s.io` wire protocol as a client, never the server side.
 
 ## 13. RBAC generation with controller-gen
 
@@ -492,7 +492,7 @@ Test levels:
 2. **Component:** provider plus fake resolver/Prometheus/cache; resolver plus Kubernetes fake client; Prometheus client plus `httptest.Server`.
 3. **API integration:** a real `AdapterBase`-built server against a temporary kube-apiserver/envtest (or `sigs.k8s.io/custom-metrics-apiserver`'s own test scaffolding) with fake `SubjectAccessReview`/`TokenReview` responses: discovery, named list envelopes, wildcard omissions, error codes, a caller with the right custom-metrics RBAC succeeding, a caller without it getting `403` from delegated authorization, CA/CN rotation for the request-header config, health, monitoring route isolation and stalled-request cancellation. This layer tests the *wiring* — that this repository configured `AdapterBase` correctly — not generic-apiserver's own authentication/authorization mechanics, which are upstream's tested responsibility.
 4. **Prometheus numerical:** `promtool` rule fixtures plus a real Prometheus query fixture for both aggregation orders, coverage gaps, lifecycle, source deduplication, CPU mode exclusions, node memory and quantity boundaries. Golden strings alone cannot prove statistical correctness.
-5. **End-to-end (release gate):** Kind cluster with an aggregated `APIService`; a user authorized (via real RBAC on `custom.metrics.k8s.io`) for metric reads but forbidden underlying workload reads succeeds on cold/hot cache and shared-flight paths, while a user without that custom-metrics RBAC is rejected by delegated authorization before reaching `internal/gateway`. Verify HPA and `btop` with v1beta2 discovery and normalized fixtures.
+5. **End-to-end (release gate):** Kind cluster with an aggregated `APIService`; a user authorized (via real RBAC on `custom.metrics.k8s.io`) for metric reads but forbidden underlying workload reads succeeds on cold/hot cache and shared-flight paths, while a user without that custom-metrics RBAC is rejected by delegated authorization before reaching `internal/gateway`. Verify HPA and `ctop` with v1beta2 discovery and normalized fixtures.
 
 Use an injected clock for TTL and CronJob fallback tests; never make tests sleep. Run race tests for cache, singleflight and dynamic certificate reloads.
 
@@ -509,17 +509,17 @@ make manifests   # validate deployment YAML and RBAC policy
 make test-rules  # pinned promtool, normalized recording-rule fixtures
 ```
 
-Release jobs cross-compile only `kubectl-btop` to the raw artifact names specified by the v1 design. The in-cluster `custom-metrics` binary is distributed in a container image, with a non-root user, read-only root filesystem, and no shell required.
+Release jobs cross-compile only `kubectl-ctop` to the raw artifact names specified by the v1 design. The in-cluster `custom-metrics` binary is distributed in a container image, with a non-root user, read-only root filesystem, and no shell required.
 
 ## 17. Suggested implementation order
 
-1. Initialize `go.mod`, pin `sigs.k8s.io/custom-metrics-apiserver`, `controller-gen`, and Prometheus test tooling, and add both minimal entry points with their `cobra.Command` root construction (a single command for `custom-metrics`, wrapping `basecmd.AdapterBase`; a root plus seven resource subcommands for `kubectl-btop`).
+1. Initialize `go.mod`, pin `sigs.k8s.io/custom-metrics-apiserver`, `controller-gen`, and Prometheus test tooling, and add both minimal entry points with their `cobra.Command` root construction (a single command for `custom-metrics`, wrapping `basecmd.AdapterBase`; a root plus seven resource subcommands for `kubectl-ctop`).
 2. Prove the `AdapterBase` wiring end-to-end with a fake `provider.CustomMetricsProvider`: discovery lists its `CustomMetricInfo` entries, a client using `k8s.io/metrics/pkg/client/custom_metrics` gets correct named/wildcard responses, a SAR-denied caller gets `403`, a SAR-allowed caller reaches the fake provider. No gateway-specific logic yet.
 3. Implement normalized recording rules and numerical coverage/identity fixtures alongside immutable catalog loading and metric parsing.
 4. Implement ServiceAccount resource resolution (using `AdapterBase`'s dynamic client/RESTMapper where it fits, §7) and retained-membership CronJob fallback, then structured PromQL and validated result conversion.
 5. Implement entry/byte-bounded cache, bounded singleflight, admission/query budgets and gateway orchestration.
 6. Wire the real `internal/gateway` provider into `AdapterBase` in place of step 2's fake, add injected telemetry/readiness; verify endpoint-level SAR authorization with real aggregation.
-7. Implement the `btop` fetch/join/output path behind the resource subcommand tree.
+7. Implement the `ctop` fetch/join/output path behind the resource subcommand tree.
 8. Add controller-gen RBAC markers, generated RBAC, the `system:auth-delegator`/`extension-apiserver-authentication-reader` bindings and remaining deployment manifests, and API integration tests.
 
 This sequence validates security and wire contracts early, then establishes numerical correctness before adding terminal presentation. Documentation of a rule contract is not a substitute for a tested deployable normalization pipeline.
