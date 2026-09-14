@@ -33,12 +33,12 @@ var (
 func newVersionCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:           "version",
-		Short:         "Print the btop version",
+		Short:         "Print the ctop version",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, err := fmt.Fprintf(cmd.OutOrStdout(), "btop version %s (commit %s, %s, %s/%s)\n",
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "ctop version %s (commit %s, %s, %s/%s)\n",
 				version, commit, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 
 			return err

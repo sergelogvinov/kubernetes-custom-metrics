@@ -48,7 +48,7 @@ all: build
 
 .PHONY: clean
 clean: ## Clean
-	@rm -rf bin/ kubectl-btop custom-metrics
+	@rm -rf bin/ kubectl-ctop custom-metrics
 
 .PHONY: tools
 tools: ## Install necessary development tools
@@ -59,13 +59,17 @@ tools: ## Install necessary development tools
 build: ## Build
 	@mkdir -p bin/
 	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) go build $(GO_LDFLAGS) \
-	-o bin/kubectl-btop ./cmd/kubectl-btop
+	-o bin/kubectl-ctop ./cmd/kubectl-ctop
 	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) go build $(GO_LDFLAGS) \
 	-o bin/custom-metrics ./cmd/custom-metrics
 
 .PHONY: install
-install: build
-	cp ./bin/kubectl-btop ~/go/bin/kubectl-btop
+install: build ## Install kubectl plugin
+	cp ./bin/kubectl-ctop ~/go/bin/kubectl-ctop
+
+.PHONY: uninstall
+uninstall: ## Uninstall kubectl plugin
+	@rm -f ~/go/bin/kubectl-ctop
 
 .PHONY: generate
 generate: ## Run controller-gen and other generators

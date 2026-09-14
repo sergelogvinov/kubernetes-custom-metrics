@@ -30,7 +30,7 @@ flowchart TD
     T7[T7 RBAC generation + deployment manifests<br/>cmd/custom-metrics/rbac.go + deploy/]
     T8[T8 API/security integration tests]
 
-    T9[T9 btop client<br/>cmd/kubectl-btop] --> T8
+    T9[T9 ctop client<br/>cmd/kubectl-ctop] --> T8
 
     T11[T11 CI, build, release tooling] -.-> T0
     T11 -.-> T7
@@ -40,7 +40,7 @@ flowchart TD
 Independent starting points: **T1, T2, T3, T4** need T0 (T1 lives under `cmd/custom-metrics` and pins
 `sigs.k8s.io/custom-metrics-apiserver`; T2–T4 live under the shared `internal/` tree; all four depend on
 the pinned `controller-gen`/Prometheus tooling and Makefile targets T0 sets up). **T9 needs
-none of that.** `cmd/kubectl-btop` only talks to the Kubernetes API — `k8s.io/client-go` for
+none of that.** `cmd/kubectl-ctop` only talks to the Kubernetes API — `k8s.io/client-go` for
 kubeconfig/REST config and `k8s.io/metrics/pkg/client/custom_metrics` for the metrics calls themselves —
 plus `cobra`/`pflag` for its own command tree. It has zero dependency on `internal/gateway`,
 `pkg/prometheus`, `pkg/catalog`, `pkg/cache`, `sigs.k8s.io/custom-metrics-apiserver`, or on any of T0's
@@ -50,7 +50,7 @@ gateway-oriented scaffolding exists — the only shared artifact is the reposito
 implementer can create directly if it doesn't exist yet. T5 needs T4's `Querier` shape stabilized enough
 to design cache keys, but can start on the LRU/singleflight mechanics immediately. T6 is the integration
 point and is the critical path: it cannot finish until T1, T2, T3, T4, T5 all land. T7/T8 depend on T6;
-T8's btop-specific assertions additionally depend on T9.
+T8's ctop-specific assertions additionally depend on T9.
 
 This split matches design.md §17's suggested order but decomposes it into units with clear ownership
 boundaries and explicit "done" criteria, so multiple tasks can run concurrently instead of strictly
@@ -312,7 +312,7 @@ diagrams).
   handled upstream of this code, by T1's `AdapterBase` wiring) applied consistently across every failure
   path this task's code owns.
 
-**Out of scope:** RBAC marker generation and deployment YAML (T7); btop (T9); delegated
+**Out of scope:** RBAC marker generation and deployment YAML (T7); ctop (T9); delegated
 authentication/authorization mechanics (T1/upstream).
 
 **Depends on:** T1, T2, T3, T4, T5 all reaching a stable interface (not necessarily 100% feature-complete,
@@ -379,29 +379,29 @@ system, not just per-package.
   Node/workload read access) succeeds on cold cache, hot cache, and shared-singleflight paths; a user
   without that `custom.metrics.k8s.io` RBAC reaches the gateway process but is rejected `403` by its
   delegated `SubjectAccessReview` before `internal/gateway`'s provider is ever invoked.
-- HPA and `btop` verified against v1beta2 discovery with normalized fixtures.
+- HPA and `ctop` verified against v1beta2 discovery with normalized fixtures.
 
 **Depends on:** T6 (needs a real running gateway), T7 (needs real RBAC/APIService manifests), and T9
-for the btop-specific assertions — this is the one point where the otherwise-independent T9 stream
+for the ctop-specific assertions — this is the one point where the otherwise-independent T9 stream
 reconnects with the gateway stream.
 
 **Blocks:** release sign-off only; does not block other implementation tasks.
 
 ---
 
-## T9 — `kubectl-btop` client
+## T9 — `kubectl-ctop` client
 
-**Goal:** the fetch → join → output path for a single request cycle. `btop` is a one-shot snapshot tool;
+**Goal:** the fetch → join → output path for a single request cycle. `ctop` is a one-shot snapshot tool;
 there is no watch/refresh mode.
 
-**Packages:** `cmd/kubectl-btop/{main,command,resources,flags,version,client,collector,output}.go`.
+**Packages:** `cmd/kubectl-ctop/{main,command,resources,flags,version,client,collector,output}.go`.
 
 **Reads:** design.md §4, §5.3, §12; metric-gateway.md §6.2 (flags/env), §7.1–§7.3 (command surface, table
 and flattened JSON/YAML output), §7.4 (distribution — not built here, just kept in mind for flag/version
 plumbing).
 
 **Scope:**
-- Cobra `*cobra.Command` tree per design.md §5.3: a root `btop` command carrying the shared flags as
+- Cobra `*cobra.Command` tree per design.md §5.3: a root `ctop` command carrying the shared flags as
   `PersistentFlags()`, plus a table-driven `newResourceCommand` factory in `resources.go` producing the
   seven resource subcommands with their descriptor-driven `Aliases` (`po`/`deploy`/`sts`/`ds`/`job`/`cj`),
   `Args: cobra.MaximumNArgs(1)`, and shared `PreRunE` validation (namespace rejected on the cluster-scoped
@@ -417,7 +417,7 @@ plumbing).
 
 **Out of scope:** any watch/refresh mode, TTY/alternate-screen logic.
 
-**Depends on:** nothing but the Kubernetes API surface itself. `cmd/kubectl-btop` imports only
+**Depends on:** nothing but the Kubernetes API surface itself. `cmd/kubectl-ctop` imports only
 `k8s.io/client-go`, `k8s.io/metrics/pkg/client/custom_metrics`, `github.com/spf13/cobra`, and
 `github.com/spf13/pflag` — none of `internal/gateway`, `pkg/prometheus`, `pkg/catalog`,
 `pkg/cache`, or `sigs.k8s.io/custom-metrics-apiserver`, and none of T0's gateway-specific setup (controller-gen
@@ -426,7 +426,7 @@ pinning, Prometheus test tooling). It can be developed and unit-tested entirely 
 any of T1–T6. The only shared artifact is the repository's `go.mod`; if T0 hasn't landed yet, this task
 can create it.
 
-**Blocks:** nothing downstream except T8's btop assertions and T11's release packaging.
+**Blocks:** nothing downstream except T8's ctop assertions and T11's release packaging.
 
 **Done when:** commands for all seven resource kinds produce correct table/JSON/YAML output
 against a fake server, reject invalid flag combinations (namespace-on-nodes, selector+named-object,
@@ -445,7 +445,7 @@ against a fake server, reject invalid flag combinations (namespace-on-nodes, sel
 - CI: `go vet`, `go test -race ./...`, Kubernetes-module-minor alignment check (including
   `sigs.k8s.io/custom-metrics-apiserver`'s pinned version, design.md §14), `go mod tidy` check, `promtool`
   fixture run (T2).
-- Cross-compilation of `kubectl-btop` only, to the five raw artifact names in metric-gateway.md §7.4, plus
+- Cross-compilation of `kubectl-ctop` only, to the five raw artifact names in metric-gateway.md §7.4, plus
   SHA256 checksums and cosign signing.
 - Container image build for `custom-metrics`: non-root user, read-only root filesystem, no shell.
 
@@ -470,4 +470,4 @@ If splitting across multiple contributors/agents immediately after T0:
 
 One owner should hold T6 itself, since it is the integration point where A–D's interfaces must actually
 compose correctly — treat it as a merge/integration task, not a from-scratch build. T7 and T11 follow once
-T6 stabilizes; T8 additionally waits on stream E (T9) for its btop-specific assertions.
+T6 stabilizes; T8 additionally waits on stream E (T9) for its ctop-specific assertions.

@@ -57,7 +57,7 @@ var (
 	validOutputs = []string{"table", "json", "yaml"}
 )
 
-// Options holds the effective value of every persistent btop flag, after
+// Options holds the effective value of every persistent ctop flag, after
 // flag > environment variable > default resolution (design.md §5.2).
 type Options struct {
 	Window         string
@@ -86,7 +86,7 @@ func NewOptions() *Options {
 	}
 }
 
-// AddFlags registers every persistent btop flag on fs, bound directly to o's
+// AddFlags registers every persistent ctop flag on fs, bound directly to o's
 // fields. Every resource subcommand inherits these through cobra's
 // PersistentFlags() merge; no subcommand registers flags of its own
 // (design.md §5.3).

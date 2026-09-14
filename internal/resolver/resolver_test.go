@@ -56,7 +56,7 @@ func stringSet(names ...string) map[string]bool {
 
 func TestResolve_PodNamed(t *testing.T) {
 	client := newFakeClient(&corev1.Pod{
-		Namespace: "prod", Name: "web-0", UID: types.UID("uid-web-0"),
+		ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "web-0", UID: types.UID("uid-web-0")},
 	})
 	r := New(client)
 
@@ -77,7 +77,7 @@ func TestResolve_PodNamed(t *testing.T) {
 
 func TestResolve_NodeNamed(t *testing.T) {
 	client := newFakeClient(&corev1.Node{
-		Name: "worker-1", UID: types.UID("uid-worker-1"),
+		ObjectMeta: metav1.ObjectMeta{Name: "worker-1", UID: types.UID("uid-worker-1")},
 	})
 	r := New(client)
 
@@ -121,8 +121,8 @@ func TestResolve_WorkloadMatchExpressionsSelector(t *testing.T) {
 	}
 
 	deploy := &appsv1.Deployment{
-		Namespace: "prod", Name: "web", UID: types.UID("uid-deploy-web"),
-		Spec: appsv1.DeploymentSpec{Selector: selector},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "web", UID: types.UID("uid-deploy-web")},
+		Spec:       appsv1.DeploymentSpec{Selector: selector},
 	}
 	matching1 := pod("prod", "web-0", "uid-web-0", map[string]string{"tier": "frontend"})
 	matching2 := pod("prod", "web-1", "uid-web-1", map[string]string{"tier": "frontend"})
@@ -156,20 +156,20 @@ func TestResolve_EachWorkloadKindUsesItsSpecSelector(t *testing.T) {
 		obj  runtime.Object
 	}{
 		{KindDeployment, &appsv1.Deployment{
-			Namespace: "prod", Name: "web", UID: types.UID("uid-w"),
-			Spec: appsv1.DeploymentSpec{Selector: labelSelector},
+			ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "web", UID: types.UID("uid-w")},
+			Spec:       appsv1.DeploymentSpec{Selector: labelSelector},
 		}},
 		{KindStatefulSet, &appsv1.StatefulSet{
-			Namespace: "prod", Name: "web", UID: types.UID("uid-w"),
-			Spec: appsv1.StatefulSetSpec{Selector: labelSelector},
+			ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "web", UID: types.UID("uid-w")},
+			Spec:       appsv1.StatefulSetSpec{Selector: labelSelector},
 		}},
 		{KindDaemonSet, &appsv1.DaemonSet{
-			Namespace: "prod", Name: "web", UID: types.UID("uid-w"),
-			Spec: appsv1.DaemonSetSpec{Selector: labelSelector},
+			ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "web", UID: types.UID("uid-w")},
+			Spec:       appsv1.DaemonSetSpec{Selector: labelSelector},
 		}},
 		{KindJob, &batchv1.Job{
-			Namespace: "prod", Name: "web", UID: types.UID("uid-w"),
-			Spec: batchv1.JobSpec{Selector: labelSelector},
+			ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "web", UID: types.UID("uid-w")},
+			Spec:       batchv1.JobSpec{Selector: labelSelector},
 		}},
 	}
 
@@ -225,7 +225,7 @@ func TestResolveCronJob_PrefersActiveJobs(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	cronJob := &batchv1.CronJob{
-		Namespace: "prod", Name: "nightly", UID: types.UID("uid-cronjob"),
+		ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "nightly", UID: types.UID("uid-cronjob")},
 	}
 	activeJob := ownedJob("prod", "nightly-123", "uid-job-active", "uid-cronjob", batchv1.JobStatus{Active: 1})
 	activeJob.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"job": "active"}}
@@ -262,7 +262,7 @@ func TestResolveCronJob_FallsBackToRecentJobs(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	cronJob := &batchv1.CronJob{
-		Namespace: "prod", Name: "nightly", UID: types.UID("uid-cronjob"),
+		ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "nightly", UID: types.UID("uid-cronjob")},
 	}
 	recentJob := ownedJob("prod", "nightly-100", "uid-job-recent", "uid-cronjob", batchv1.JobStatus{
 		CompletionTime: new(metav1.NewTime(now.Add(-2 * time.Hour))),
@@ -297,7 +297,7 @@ func TestResolveCronJob_NoActiveOrRecentIs404(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	cronJob := &batchv1.CronJob{
-		Namespace: "prod", Name: "nightly", UID: types.UID("uid-cronjob"),
+		ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "nightly", UID: types.UID("uid-cronjob")},
 	}
 	tooOldJob := ownedJob("prod", "nightly-1", "uid-job-old", "uid-cronjob", batchv1.JobStatus{
 		CompletionTime: new(metav1.NewTime(now.Add(-48 * time.Hour))),
@@ -321,7 +321,7 @@ func TestResolveCronJob_UnrelatedJobIgnored(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	cronJob := &batchv1.CronJob{
-		Namespace: "prod", Name: "nightly", UID: types.UID("uid-cronjob"),
+		ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "nightly", UID: types.UID("uid-cronjob")},
 	}
 	// Same name prefix, but owned by a different CronJob UID: ownership must
 	// be checked by UID, not name (design.md §7).
@@ -399,8 +399,8 @@ func TestResolve_WildcardPodsSortedAndFiltered(t *testing.T) {
 func TestResolve_WildcardCronJobOmitsNotFoundInstead(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	withJobs := &batchv1.CronJob{Namespace: "prod", Name: "has-runs", UID: types.UID("uid-cj-1")}
-	withoutJobs := &batchv1.CronJob{Namespace: "prod", Name: "no-runs", UID: types.UID("uid-cj-2")}
+	withJobs := &batchv1.CronJob{ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "has-runs", UID: types.UID("uid-cj-1")}}
+	withoutJobs := &batchv1.CronJob{ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "no-runs", UID: types.UID("uid-cj-2")}}
 	activeJob := ownedJob("prod", "has-runs-1", "uid-job-1", "uid-cj-1", batchv1.JobStatus{Active: 1})
 	activeJob.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"job": "1"}}
 	activePod := pod("prod", "pod-1", "uid-pod-1", map[string]string{"job": "1"})
@@ -508,25 +508,29 @@ func TestListObjects_FollowsContinueTokens(t *testing.T) {
 
 func pod(namespace, name, uid string, podLabels map[string]string) *corev1.Pod {
 	return &corev1.Pod{
-		Namespace: namespace,
-		Name:      name,
-		UID:       types.UID(uid),
-		Labels:    podLabels,
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: namespace,
+			Name:      name,
+			UID:       types.UID(uid),
+			Labels:    podLabels,
+		},
 	}
 }
 
 func ownedJob(namespace, name, uid, ownerUID string, status batchv1.JobStatus) *batchv1.Job {
 	return &batchv1.Job{
-		Namespace: namespace,
-		Name:      name,
-		UID:       types.UID(uid),
-		OwnerReferences: []metav1.OwnerReference{
-			{
-				APIVersion: "batch/v1",
-				Kind:       "CronJob",
-				Name:       "irrelevant-for-uid-matching",
-				UID:        types.UID(ownerUID),
-				Controller: new(true),
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: namespace,
+			Name:      name,
+			UID:       types.UID(uid),
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: "batch/v1",
+					Kind:       "CronJob",
+					Name:       "irrelevant-for-uid-matching",
+					UID:        types.UID(ownerUID),
+					Controller: new(true),
+				},
 			},
 		},
 		Status: status,

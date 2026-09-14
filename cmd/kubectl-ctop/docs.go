@@ -14,5 +14,5 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package main contains the kubectl plugin btop implementation.
+// Package main contains the kubectl plugin ctop implementation.
 package main

@@ -23,9 +23,9 @@ builds:
       - v1
     goarm64:
       - v8.0
-  - id: kubectl-btop
-    main: ./cmd/kubectl-btop
-    binary: kubectl-btop
+  - id: kubectl-ctop
+    main: ./cmd/kubectl-ctop
+    binary: kubectl-ctop
     env:
       - CGO_ENABLED=0
     flags:
@@ -51,9 +51,9 @@ changelog:
   disable: true
 
 archives:
-  - id: kubectl-btop
+  - id: kubectl-ctop
     ids:
-      - kubectl-btop
+      - kubectl-ctop
     formats: [binary]
     name_template: "{{ .Binary }}_{{ .Os }}_{{ .Arch }}"
 
@@ -90,7 +90,7 @@ docker_signs:
 
 checksum:
   ids:
-    - kubectl-btop
+    - kubectl-ctop
   name_template: checksums.txt
   algorithm: sha256
 
