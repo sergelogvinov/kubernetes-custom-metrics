@@ -36,6 +36,37 @@ envFrom: {}
   # - secretRef:
   #     name: secret-name
 
+# -- Custom configuration for the application.
+config: {}
+  # bases:
+  #   cpu:
+  #     series: container_cpu_usage_seconds_total
+  #     unit: cores
+  #     scope: pod
+  #     aggregation: sum-then-stat
+  #   memory:
+  #     series: container_memory_working_set_bytes
+  #     unit: bytes
+  #     scope: pod
+  #     aggregation: sum-then-stat
+  #   node_cpu:
+  #     series: node_cpu_usage_cores
+  #     unit: cores
+  #     scope: node
+  #     aggregation: sum-then-stat
+  #   node_memory:
+  #     series: node_memory_used_bytes
+  #     unit: bytes
+  #     scope: node
+  #     aggregation: stat-then-sum
+
+tls:
+  # -- The type of TLS configuration to use for the API service. Possible values are "cert-manager" or "helm".
+  type: "cert-manager"
+
+  # -- The cluster domain for the Kubernetes cluster.
+  clusterDomain: cluster.local
+
 # -- Pods Service Account.
 # ref: https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/
 serviceAccount:

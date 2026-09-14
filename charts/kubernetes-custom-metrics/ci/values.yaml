@@ -7,6 +7,9 @@ args:
   # - --cluster=test
   - --prometheus-url=http://vmsingle-vm.monitoring.svc:8429
 
+tls:
+  type: "helm"
+
 podAnnotations:
   cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
 
