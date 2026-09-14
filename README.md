@@ -47,7 +47,7 @@ helm upgrade --install kubernetes-custom-metrics \
   --namespace kube-system --set-string args="--prometheus-url=http://prometheus-server"
 ```
 
-The chart installs the `custom.metrics.k8s.io` APIService. 
+The chart installs the `custom.metrics.k8s.io` APIService.
 Configure the chart values for your Prometheus-compatible backend and catalog as needed,
 see [Configuration](charts/kubernetes-custom-metrics/README.md).
 
@@ -56,8 +56,7 @@ see [Configuration](charts/kubernetes-custom-metrics/README.md).
 Install the `kubectl-ctop` plugin with Homebrew:
 
 ```sh
-brew tap sergelogvinov/tap
-brew install kubectl-ctop
+brew install sergelogvinov/tap/kubectl-ctop
 ```
 
 The plugin is then available through kubectl:

@@ -57,6 +57,33 @@ archives:
     formats: [binary]
     name_template: "{{ .Binary }}_{{ .Os }}_{{ .Arch }}"
 
+homebrew_casks:
+  - name: kubectl-ctop
+    ids:
+      - kubectl-ctop
+    description: CTop is a kubectl plugin for top-like monitoring of Kubernetes historical resource usage
+    homepage: "https://github.com/sergelogvinov/{{ .ProjectName }}"
+    license: Apache-2.0
+
+    directory: Casks
+    commit_author:
+      name: sergelogvinov
+      email: 5407715+sergelogvinov@users.noreply.github.com
+    repository:
+      owner: sergelogvinov
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TOKEN }}"
+
+    binaries:
+      - kubectl-ctop
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/kubectl-ctop_darwin_#{arch}"]
+          end
+
 dockers_v2:
   - id: custom-metrics
     flags:
