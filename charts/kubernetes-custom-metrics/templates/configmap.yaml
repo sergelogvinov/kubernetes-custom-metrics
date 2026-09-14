@@ -29,5 +29,5 @@ data:
         series: node_memory_used_bytes
         unit: bytes
         scope: node
-        aggregation: sum-then-stat
+        aggregation: stat-then-sum
     {{- end }}

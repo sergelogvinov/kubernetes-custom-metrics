@@ -99,7 +99,6 @@ spec:
           configMap:
             name: {{ include "kubernetes-custom-metrics.fullname" . }}
         - name: certs
-          # emptyDir: {}
           secret:
             secretName: {{ include "kubernetes-custom-metrics.fullname" . }}-tls
         - name: tmpfs

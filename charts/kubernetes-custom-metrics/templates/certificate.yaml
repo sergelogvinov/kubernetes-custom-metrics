@@ -1,3 +1,4 @@
+{{- if eq .Values.tls.type "cert-manager" }}
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
@@ -43,12 +44,14 @@ spec:
     group: cert-manager.io
     kind: Issuer
     name: {{ include "kubernetes-custom-metrics.fullname" . }}
+  commonName: {{ include "kubernetes-custom-metrics.fullname" . }}
   dnsNames:
-    - {{ include "kubernetes-custom-metrics.fullname" . }}
     - {{ include "kubernetes-custom-metrics.fullname" . }}.{{ .Release.Namespace }}
     - {{ include "kubernetes-custom-metrics.fullname" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "kubernetes-custom-metrics.fullname" . }}.{{ .Release.Namespace }}.svc.{{ .Values.tls.clusterDomain }}
   usages:
     - digital signature
     - key encipherment
     - server auth
     - client auth
+{{- end }}

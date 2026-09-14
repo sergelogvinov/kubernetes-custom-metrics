@@ -1,0 +1,54 @@
+{{- $current := dict }}
+{{- $crts := dict }}
+
+{{- if eq .Values.tls.type "helm" }}
+{{- $current = lookup "v1" "Secret" .Release.Namespace (printf "%s-tls" (include "kubernetes-custom-metrics.fullname" .)) }}
+{{- $cn := include "kubernetes-custom-metrics.fullname" . }}
+{{- $altNames := list }}
+{{- $altNames = append $altNames (printf "%s.%s" $cn .Release.Namespace) }}
+{{- $altNames = append $altNames (printf "%s.%s.svc" $cn .Release.Namespace) }}
+{{- $altNames = append $altNames (printf "%s.%s.svc.%s" $cn .Release.Namespace .Values.tls.clusterDomain) }}
+{{- $crts = genSelfSignedCert $cn nil $altNames 3650 }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "kubernetes-custom-metrics.fullname" . }}-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubernetes-custom-metrics.labels" . | nindent 4 }}
+type: Opaque
+data:
+  {{- if $current }}
+  tls.crt: {{ index $current.data "tls.crt" }}
+  tls.key: {{ index $current.data "tls.key" }}
+  {{- else }}
+  tls.crt: {{ $crts.Cert| b64enc | quote }}
+  tls.key: {{ $crts.Key | b64enc | quote }}
+  {{- end }}
+---
+{{- end }}
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1beta2.custom.metrics.k8s.io
+  {{- if eq .Values.tls.type "cert-manager" }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "kubernetes-custom-metrics.fullname" . }}-tls
+  {{- end }}
+spec:
+  group: custom.metrics.k8s.io
+  version: v1beta2
+  service:
+    name: {{ include "kubernetes-custom-metrics.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+    port: 443
+  groupPriorityMinimum: 100
+  versionPriority: 100
+  insecureSkipTLSVerify: false
+  {{- if eq .Values.tls.type "helm" }}
+  {{- if $current }}
+  caBundle: {{ index $current.data "tls.crt" }}
+  {{- else }}
+  caBundle: {{ $crts.Cert | b64enc | quote }}
+  {{- end }}
+  {{- end }}
