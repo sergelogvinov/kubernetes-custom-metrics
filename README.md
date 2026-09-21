@@ -41,7 +41,7 @@ The project has two parts: the custom metrics API server, which runs in the clus
 
 Install the API server with Helm from the OCI registry:
 
-```sh
+```shell
 helm upgrade --install kubernetes-custom-metrics \
   oci://ghcr.io/sergelogvinov/charts/kubernetes-custom-metrics \
   --namespace kube-system --set-string args="--prometheus-url=http://prometheus-server"

@@ -14,4 +14,16 @@
 
 {{ template "chart.requirementsSection" . }}
 
+Making historical metrics available through the Kubernetes API (custom.metrics.k8s.io)
+also allows Kubernetes addons, operators, and custom controllers to use this data directly.
+They can make decisions based on how workloads behaved over time, instead of using only the current resource usage.
+
+## Installation
+
+```shell
+helm upgrade --install kubernetes-custom-metrics \
+  oci://ghcr.io/sergelogvinov/charts/kubernetes-custom-metrics \
+  --namespace kube-system --set-string args="--prometheus-url=http://prometheus-server"
+```
+
 {{ template "chart.valuesSection" . }}
