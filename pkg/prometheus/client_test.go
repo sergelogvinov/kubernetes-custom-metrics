@@ -510,6 +510,33 @@ func TestClient_Query_TimeoutIsDistinguishableFromOtherBackendErrors(t *testing.
 	}
 }
 
+// TestClient_Query_TimeoutExcludesQueueWait checks that the per-query
+// timeout starts once a query holds a concurrency slot: with one slot, the
+// fourth sub-query waits ~3 × 60ms before it is sent, well past the 100ms
+// per-query timeout, yet each query itself finishes within it.
+func TestClient_Query_TimeoutExcludesQueueWait(t *testing.T) {
+	req := baseRequest()
+	usage, anyActive, coverage, freshness := queriesFor(t, req)
+
+	const sleep = 60 * time.Millisecond
+	server := newMockPrometheus(t, map[string]mockResult{
+		usage:     {values: []string{"1.5"}, sleep: sleep},
+		anyActive: {values: []string{"1"}, sleep: sleep},
+		coverage:  {sleep: sleep},
+		freshness: {values: []string{"2"}, sleep: sleep},
+	})
+
+	client, err := NewClient(ClientConfig{URL: server.URL, Timeout: 100 * time.Millisecond, MaxConcurrentQueries: 1})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	result, ok, err := client.Query(context.Background(), req)
+	if err != nil || !ok {
+		t.Fatalf("Query = (%v, %v, %v), want a result: queue wait must not count against the per-query timeout", result, ok, err)
+	}
+}
+
 func TestClient_RejectsEmptySelection(t *testing.T) {
 	client := newTestClient(t, "http://127.0.0.1:0")
 

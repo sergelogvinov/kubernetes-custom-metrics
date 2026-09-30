@@ -51,9 +51,11 @@ type ClientConfig struct {
 	// "https://prometheus.monitoring.svc:9090". Required. Must not contain
 	// userinfo.
 	URL string
-	// Timeout bounds each individual backend query (default 10s).
+	// Timeout bounds each individual backend query once it holds a
+	// query slot; time spent queued for a slot is bounded only by the
+	// caller's context (default DefaultTimeout).
 	Timeout time.Duration
-	// MaxConns bounds the connection pool (default 100).
+	// MaxConns bounds the connection pool (default DefaultMaxConns).
 	MaxConns int
 	// CAFile optionally overrides the system root CA pool for verifying
 	// the backend's TLS certificate. TLS verification is never disabled.
@@ -63,13 +65,23 @@ type ClientConfig struct {
 	// contents are never logged.
 	TokenFile string
 	// MaxConcurrentQueries bounds how many backend HTTP queries this
-	// Client will have in flight at once, process-wide (default 16 —
+	// Client will have in flight at once, process-wide
+	// (default DefaultMaxConcurrentQueries —
 	// metric-gateway.md §6.3: "at most 16 backend queries run
 	// concurrently per process"). Query calls beyond the limit block
 	// (queue) rather than being rejected; this is a resource-protection
 	// bound on the backend, not a caller-facing admission decision.
 	MaxConcurrentQueries int
 }
+
+// Defaults applied by NewClient to zero-valued ClientConfig fields. The
+// gateway's --prometheus-timeout, --prometheus-max-conns and
+// --max-concurrent-queries flags default to these same values.
+const (
+	DefaultTimeout              = 5 * time.Second
+	DefaultMaxConns             = 100
+	DefaultMaxConcurrentQueries = 16
+)
 
 // Querier is the narrow surface internal/gateway depends on.
 type Querier interface {
@@ -113,15 +125,15 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = 10 * time.Second
+		timeout = DefaultTimeout
 	}
 	maxConns := cfg.MaxConns
 	if maxConns <= 0 {
-		maxConns = 100
+		maxConns = DefaultMaxConns
 	}
 	maxConcurrentQueries := cfg.MaxConcurrentQueries
 	if maxConcurrentQueries <= 0 {
-		maxConcurrentQueries = 16
+		maxConcurrentQueries = DefaultMaxConcurrentQueries
 	}
 
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
@@ -310,15 +322,19 @@ func (c *Client) queryRaw(ctx context.Context, req Request) (Result, bool, error
 }
 
 func (c *Client) run(ctx context.Context, query string, ts time.Time) (float64, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-
+	// Queueing for a slot is bounded by the caller's request deadline
+	// only; the per-query timeout starts once the query can actually be
+	// sent, so a burst of queued queries does not time out before
+	// reaching the backend.
 	select {
 	case c.queries <- struct{}{}:
 		defer func() { <-c.queries }()
 	case <-ctx.Done():
 		return 0, false, fmt.Errorf("%w: %w", ErrBackend, ctx.Err())
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
 
 	start := time.Now()
 	klog.V(4).InfoS("querying prometheus", "query", query, "queryTime", ts)

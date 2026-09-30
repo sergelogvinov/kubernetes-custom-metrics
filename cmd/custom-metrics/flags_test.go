@@ -18,8 +18,13 @@ package main
 
 import (
 	"errors"
+	"io"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/catalog"
+	"github.com/spf13/pflag"
 )
 
 func noneChanged(string) bool { return false }
@@ -65,7 +70,7 @@ func TestResolveEnvironment_EnvAppliesWhenFlagNotSet(t *testing.T) {
 	err := o.ResolveEnvironment(noneChanged, lookupEnvFrom(map[string]string{
 		envCluster:             "prod-cluster",
 		envPrometheusURL:       "https://prom:9090",
-		envPrometheusTimeout:   "5s",
+		envPrometheusTimeout:   "7s",
 		envPrometheusMaxConns:  "50",
 		envRequestTimeout:      "45s",
 		envMaxInflightRequests: "64",
@@ -84,7 +89,7 @@ func TestResolveEnvironment_EnvAppliesWhenFlagNotSet(t *testing.T) {
 	if o.PrometheusURL != "https://prom:9090" {
 		t.Errorf("PrometheusURL = %q", o.PrometheusURL)
 	}
-	if o.PrometheusTimeout != 5*time.Second {
+	if o.PrometheusTimeout != 7*time.Second {
 		t.Errorf("PrometheusTimeout = %s", o.PrometheusTimeout)
 	}
 	if o.PrometheusMaxConns != 50 {
@@ -123,6 +128,79 @@ func TestResolveEnvironment_ExplicitFlagBeatsEnv(t *testing.T) {
 	if o.Cluster != "from-flag" {
 		t.Errorf("Cluster = %q, want from-flag (explicit flag must win)", o.Cluster)
 	}
+}
+
+func TestResolveEnvironment_DiscoveryMode(t *testing.T) {
+	o := NewOptions()
+	if o.DiscoveryMode != catalog.DiscoveryMinimal {
+		t.Errorf("default DiscoveryMode = %q, want %q", o.DiscoveryMode, catalog.DiscoveryMinimal)
+	}
+
+	if err := o.ResolveEnvironment(noneChanged, lookupEnvFrom(map[string]string{envDiscoveryMode: "full"})); err != nil {
+		t.Fatalf("ResolveEnvironment() error = %v", err)
+	}
+	if o.DiscoveryMode != catalog.DiscoveryFull {
+		t.Errorf("DiscoveryMode = %q, want %q", o.DiscoveryMode, catalog.DiscoveryFull)
+	}
+
+	o = NewOptions()
+	if err := o.ResolveEnvironment(noneChanged, lookupEnvFrom(map[string]string{envDiscoveryMode: " None\n"})); err != nil {
+		t.Fatalf("ResolveEnvironment() error = %v", err)
+	}
+	if o.DiscoveryMode != catalog.DiscoveryNone {
+		t.Errorf("DiscoveryMode = %q, want %q (case and surrounding whitespace ignored)", o.DiscoveryMode, catalog.DiscoveryNone)
+	}
+
+	err := NewOptions().ResolveEnvironment(noneChanged, lookupEnvFrom(map[string]string{envDiscoveryMode: "partial"}))
+	if _, ok := errors.AsType[*usageError](err); !ok {
+		t.Errorf("err = %v (%T), want *usageError for an unknown mode", err, err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "minimal") {
+		t.Errorf("err = %v, want it to list the valid modes", err)
+	}
+}
+
+func TestDiscoveryModeFlag(t *testing.T) {
+	parse := func(t *testing.T, args ...string) (*Options, *pflag.FlagSet, error) {
+		t.Helper()
+
+		o := NewOptions()
+		fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		o.AddFlags(fs)
+
+		return o, fs, fs.Parse(args)
+	}
+
+	t.Run("binds and normalizes", func(t *testing.T) {
+		o, _, err := parse(t, "--discovery-mode=Full")
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if o.DiscoveryMode != catalog.DiscoveryFull {
+			t.Errorf("DiscoveryMode = %q, want %q", o.DiscoveryMode, catalog.DiscoveryFull)
+		}
+	})
+
+	t.Run("rejects unknown mode at parse time", func(t *testing.T) {
+		_, _, err := parse(t, "--discovery-mode=partial")
+		if err == nil || !strings.Contains(err.Error(), "minimal") {
+			t.Errorf("Parse err = %v, want an error listing the valid modes", err)
+		}
+	})
+
+	t.Run("explicit flag beats env", func(t *testing.T) {
+		o, fs, err := parse(t, "--discovery-mode=none")
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if err := o.ResolveEnvironment(fs.Changed, lookupEnvFrom(map[string]string{envDiscoveryMode: "full"})); err != nil {
+			t.Fatalf("ResolveEnvironment() error = %v", err)
+		}
+		if o.DiscoveryMode != catalog.DiscoveryNone {
+			t.Errorf("DiscoveryMode = %q, want %q (explicit flag must win)", o.DiscoveryMode, catalog.DiscoveryNone)
+		}
+	})
 }
 
 func TestResolveEnvironment_MalformedDurationEnvIsRejected(t *testing.T) {
@@ -204,6 +282,7 @@ func TestValidate_RejectsNonPositiveDurationsAndCounts(t *testing.T) {
 		func(o *Options) { o.CacheMaxBytes = 0 },
 		func(o *Options) { o.CronJobFallbackWindow = 0 },
 		func(o *Options) { o.DiscoveryMaxMetrics = 0 },
+		func(o *Options) { o.DiscoveryMode = "partial" },
 	}
 	for i, mutate := range cases {
 		o := validOptions()

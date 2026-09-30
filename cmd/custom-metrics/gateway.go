@@ -33,13 +33,13 @@ import (
 // loadCatalog reads and validates the catalog ConfigMap document at path,
 // loaded and validated before the serving socket opens (design.md §9, §10
 // step 2).
-func loadCatalog(path string, maxDiscoveryMetrics int) (*catalog.Catalog, error) {
+func loadCatalog(path string, mode catalog.DiscoveryMode, maxDiscoveryMetrics int) (*catalog.Catalog, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading catalog %s: %w", path, err)
 	}
 
-	cat, err := catalog.Load(data, maxDiscoveryMetrics)
+	cat, err := catalog.Load(data, mode, maxDiscoveryMetrics)
 	if err != nil {
 		return nil, fmt.Errorf("loading catalog %s: %w", path, err)
 	}

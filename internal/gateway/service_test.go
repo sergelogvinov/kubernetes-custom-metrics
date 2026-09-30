@@ -62,7 +62,13 @@ bases:
 func testCatalog(t *testing.T) *catalog.Catalog {
 	t.Helper()
 
-	cat, err := catalog.Load([]byte(testCatalogYAML), catalog.MaxDiscoveryMetrics)
+	return testCatalogWithDiscovery(t, catalog.DiscoveryFull)
+}
+
+func testCatalogWithDiscovery(t *testing.T, mode catalog.DiscoveryMode) *catalog.Catalog {
+	t.Helper()
+
+	cat, err := catalog.Load([]byte(testCatalogYAML), mode, catalog.MaxDiscoveryMetrics)
 	if err != nil {
 		t.Fatalf("catalog.Load: %v", err)
 	}
@@ -195,6 +201,31 @@ func TestService_Get_NamedHit(t *testing.T) {
 	}
 	if len(q.lastReq.Names) != 1 || q.lastReq.Names[0] != "web-0" {
 		t.Errorf("Names = %v", q.lastReq.Names)
+	}
+}
+
+// TestService_Get_ServesNamesDiscoveryDoesNotAdvertise pins the contract
+// that --discovery-mode only shapes ListAllMetrics: canonical and
+// non-canonical names are served even when nothing is advertised.
+func TestService_Get_ServesNamesDiscoveryDoesNotAdvertise(t *testing.T) {
+	for _, mode := range []catalog.DiscoveryMode{catalog.DiscoveryMinimal, catalog.DiscoveryNone} {
+		for _, metric := range []string{"cpu_p95_1h", "memory_max_26m"} {
+			t.Run(string(mode)+"/"+metric, func(t *testing.T) {
+				res := &fakeResolver{resolutions: []resolver.Resolution{podResolution("web-0", "uid-web-0")}}
+				q := &fakeQuerier{result: prometheus.Result{Value: 1.5, Timestamp: time.Unix(1_700_000_000, 0)}, ok: true}
+				svc := newTestService(t, testCatalogWithDiscovery(t, mode), res, q)
+
+				req := podRequest("web-0")
+				req.Metric = metric
+				result, err := svc.Get(context.Background(), req)
+				if err != nil {
+					t.Fatalf("Get(%s): %v", metric, err)
+				}
+				if len(result.Items) != 1 || result.Items[0].MetricName != metric {
+					t.Errorf("Items = %+v, want one item for %s", result.Items, metric)
+				}
+			})
+		}
 	}
 }
 

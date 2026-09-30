@@ -37,7 +37,7 @@ Status: revised design, not yet implemented. This revision supersedes the previo
 | `stat` | `avg`, `max`, `min`, `p50`, `p90`, `p95`, `p99`, `stddev` |
 | `window` | Any Go-duration-syntax string of at least `1m` (e.g. `26m`, `34m`, `2h`), not just the canonical windows below |
 
-`window` accepts any duration of `1m` or longer that `time.ParseDuration` parses, not a fixed enum — the metric-name parser validates it by attempting that parse and checking the minimum, not by membership in a list. Sub-minute windows are rejected: the normalized recording rules/subqueries evaluate on a fixed grid and CPU input is already a five-minute-smoothed rate, so anything shorter carries too few grid points to mean anything. Seven windows — `1m`, `5m`, `15m`, `1h`, `6h`, `12h`, `24h` — are the **canonical, discoverable** set: the only ones enumerated in `custom.metrics.k8s.io` discovery output. A non-canonical window like `cpu_avg_26m` still resolves correctly when queried directly (as `kubectl ctop` does); it just isn't advertised. Discovery therefore contains **(6 × 2 + 1 × 2) × 8 × 7 = 784 resource/metric entries** for the canonical set. The discovery cap counts entries, not distinct names. Unsupported base/resource combinations are not advertised and return `404`.
+`window` accepts any duration of `1m` or longer that `time.ParseDuration` parses, not a fixed enum — the metric-name parser validates it by attempting that parse and checking the minimum, not by membership in a list. Sub-minute windows are rejected: the normalized recording rules/subqueries evaluate on a fixed grid and CPU input is already a five-minute-smoothed rate, so anything shorter carries too few grid points to mean anything. Seven windows — `1m`, `5m`, `15m`, `1h`, `6h`, `12h`, `24h` — are the **canonical** set: the only ones `custom.metrics.k8s.io` discovery can enumerate, all of them under `--discovery-mode=full` and only `5m` under the default `minimal`. A non-canonical window like `cpu_avg_26m` still resolves correctly when queried directly (as `kubectl ctop` does); it is never advertised. With `--discovery-mode=full`, discovery therefore contains **(6 × 2 + 1 × 2) × 8 × 7 = 784 resource/metric entries** for the canonical set. The default `--discovery-mode=minimal` advertises one example per base and resource (`<base>_avg_5m`, 14 entries), and `none` advertises nothing. Discovery is informational only — the HPA controller and `kubectl ctop` query metric names directly — and every name the grammar accepts is served in every mode. The smaller default keeps the discovery response cheap for the aggregator, which re-fetches it on every availability check. When a client closes the stream before the response is written (the availability check does this routinely), the gateway logs the resulting `http2: stream closed` write error at `-v=4` instead of as an error, in every mode. The discovery cap counts entries, not distinct names. Unsupported base/resource combinations are not advertised and return `404`.
 
 Temporal `sum` is deferred: `sum_over_time` adds samples and depends on resolution; it is neither CPU-seconds nor a meaningful memory-usage quantity. Spatial sums across containers/pods remain part of aggregation.
 
@@ -216,11 +216,11 @@ Gateway-specific flags, defined by this repository and following the CLI-over-en
 | :--- | :--- | :--- | :--- |
 | `--cluster` | `CLUSTER` | — | Exact backend cluster label; omitted from the query entirely when unset |
 | `--prometheus-url` | `PROMETHEUS_URL` | — | Backend endpoint |
-| `--prometheus-timeout` | `PROMETHEUS_TIMEOUT` | `10s` | Per-query timeout |
+| `--prometheus-timeout` | `PROMETHEUS_TIMEOUT` | `5s` | Per-query timeout |
 | `--prometheus-max-conns` | `PROMETHEUS_MAX_CONNS` | `100` | Connection pool |
 | `--prometheus-ca-file` | `PROMETHEUS_CA_FILE` | system roots | Backend TLS trust |
 | `--prometheus-token-file` | `PROMETHEUS_TOKEN_FILE` | — | Optional bearer-token file; never log its contents |
-| `--request-timeout` | `REQUEST_TIMEOUT` | `30s` | Total computation deadline |
+| `--request-timeout` | `REQUEST_TIMEOUT` | `10s` | Total computation deadline; keep below client deadlines (HPA sync period, aggregator proxy) |
 | `--max-inflight-requests` | `MAX_INFLIGHT` | `128` | Admitted metric requests including waiters |
 | `--max-shared-computations` | `MAX_COMPUTATIONS` | `32` | Live distinct computations, including queued work |
 | `--max-concurrent-queries` | `MAX_QUERIES` | `16` | Global backend query concurrency |
@@ -231,6 +231,7 @@ Gateway-specific flags, defined by this repository and following the CLI-over-en
 | `--catalog-path` | `CATALOG_PATH` | `/etc/gateway/catalog.yaml` | Catalog mount |
 | `--cronjob-fallback-window` | `CRONJOB_FALLBACK` | `24h` | Recent-Job lookback |
 | `--discovery-max-metrics` | `DISCOVERY_MAX` | `1000` | Resource/metric entry cap |
+| `--discovery-mode` | `DISCOVERY_MODE` | `minimal` | Advertised entries: `full`, `minimal`, or `none`; does not affect which names are served |
 
 TLS verification is never disabled for Prometheus; reject URLs containing userinfo and do not forward credentials across redirects.
 
@@ -262,7 +263,7 @@ Serving, authentication, authorization, and Kubernetes-access flags are **not** 
 | `--no-headers` | — | `false` | |
 | `--sort-by` | `SORT_BY` | `name` | `cpu`, `memory`, `name` |
 | `--output` / `-o` | `OUTPUT` | `table` | `table`, `json`, `yaml` |
-| `--request-timeout` | `REQUEST_TIMEOUT` | `35s` | Bound discovery and metric HTTP requests |
+| `--request-timeout` | `REQUEST_TIMEOUT` | `15s` | Bound discovery and metric HTTP requests |
 | `--kubeconfig` | `KUBECONFIG` | — | |
 | `--context` | `CONTEXT` | — | |
 
@@ -272,7 +273,7 @@ Serving, authentication, authorization, and Kubernetes-access flags are **not** 
 
 - Cap admitted metric requests at 128 by default; reject excess immediately with `429` and `Retry-After: 1`. Health/discovery handling does not wait on expensive metric work.
 - Independently cap live distinct shared computations at 32 by default, including queued work. Hold that slot until computation ends, even if all callers disconnect; joining an existing flight needs no new computation slot. Reject creation of an excess flight with `429` and `Retry-After: 1`.
-- By default at most 16 backend queries run concurrently per process; at most four per shared computation is a fixed v1 limit. All queueing, Kubernetes listing, coverage checks and backend queries count toward the total deadline (default 30 seconds). The per-query timeout (default 10 seconds) is additionally enforced. No automatic backend retries in v1.
+- By default at most 16 backend queries run concurrently per process; at most four per shared computation is a fixed v1 limit. All queueing, Kubernetes listing, coverage checks and backend queries count toward the total deadline (default 10 seconds, below the 15-second HPA sync period so a slow backend yields a clean `504` before callers give up). The per-query timeout (default 5 seconds) is additionally enforced; it starts once the query holds a concurrency slot, so queueing counts only against the total deadline. No automatic backend retries in v1.
 - Fixed v1 safety limits: 500 target objects, 5,000 selected Pods, 1 MiB rendered query, 16 MiB decompressed backend response and 8 MiB encoded API response. Enforce limits while reading/listing, not after unbounded accumulation. Over-budget requests fail with `413` (`RequestEntityTooLarge`) rather than truncating results. Configure the backend with a query sample limit as well; normalized input and concurrency limits do not bound Prometheus's internal execution memory.
 - Kubernetes lists use bounded pages and propagate contexts. A single oversized selection is not split into independently aggregated results: doing so would corrupt quantiles and other nonlinear statistics.
 - No server watch flag exists: every request is ordinary GET traffic subject to the same server admission limits, including HPA's periodic polling.
@@ -480,7 +481,7 @@ GET /apis/custom.metrics.k8s.io/v1beta2/namespaces/prod/cronjobs.batch/nightly-b
 **In scope:**
 - Bases: `cpu`, `memory`, `node_cpu`, `node_memory`
 - Stats: `avg`, `max`, `min`, `p50`, `p90`, `p95`, `p99`, `stddev`
-- Windows: any Go duration of at least `1m` (e.g. `26m`, `2h`); `1m`, `5m`, `15m`, `1h`, `6h`, `12h`, `24h` are the canonical, discoverable set
+- Windows: any Go duration of at least `1m` (e.g. `26m`, `2h`); `1m`, `5m`, `15m`, `1h`, `6h`, `12h`, `24h` are the canonical set that `--discovery-mode=full` enumerates
 - Resources: pods, nodes, deployments, statefulsets, daemonsets, jobs, cronjobs
 - Single aggregated value per workload; per-node list for node wildcards
 - CronJob 1-day fallback with 404 on empty

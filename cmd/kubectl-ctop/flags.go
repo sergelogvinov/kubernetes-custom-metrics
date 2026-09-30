@@ -48,7 +48,7 @@ const (
 	defaultStat           = "avg"
 	defaultSortBy         = "name"
 	defaultOutput         = "table"
-	defaultRequestTimeout = 35 * time.Second
+	defaultRequestTimeout = 15 * time.Second
 )
 
 var (

@@ -25,7 +25,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/custom-metrics-apiserver/pkg/provider"
@@ -37,6 +39,53 @@ import (
 // 1 cluster-scoped resource × 2 node-scoped bases) × 8 stats × 7 windows
 // (metric-gateway.md §2).
 const MaxDiscoveryMetrics = 784
+
+// DiscoveryMode selects how much of the metric grammar ListAllMetrics
+// advertises. Discovery is informational only: every name the grammar
+// parses is served regardless of whether it is advertised.
+type DiscoveryMode string
+
+const (
+	// DiscoveryFull advertises every base × resource × stat × canonical
+	// window combination (784 entries for the full default catalog).
+	DiscoveryFull DiscoveryMode = "full"
+	// DiscoveryMinimal advertises one entry per base × resource, using
+	// MinimalStat and MinimalWindow, as an example of the naming scheme.
+	DiscoveryMinimal DiscoveryMode = "minimal"
+	// DiscoveryNone advertises no metrics.
+	DiscoveryNone DiscoveryMode = "none"
+)
+
+// MinimalStat and MinimalWindow form the single entry DiscoveryMinimal
+// advertises per base and resource.
+const (
+	MinimalStat   = StatAvg
+	MinimalWindow = Window5m
+)
+
+// discoveryModes lists every valid DiscoveryMode, in documented order.
+var discoveryModes = []DiscoveryMode{DiscoveryFull, DiscoveryMinimal, DiscoveryNone}
+
+// DiscoveryModes returns every valid DiscoveryMode.
+func DiscoveryModes() []DiscoveryMode {
+	return slices.Clone(discoveryModes)
+}
+
+// Valid reports whether m is one of DiscoveryModes.
+func (m DiscoveryMode) Valid() bool {
+	return slices.Contains(discoveryModes, m)
+}
+
+// ParseDiscoveryMode parses s case-insensitively, ignoring surrounding
+// whitespace. The error for an unknown value lists the valid modes.
+func ParseDiscoveryMode(s string) (DiscoveryMode, error) {
+	m := DiscoveryMode(strings.ToLower(strings.TrimSpace(s)))
+	if !m.Valid() {
+		return "", fmt.Errorf("unknown discovery mode %q, must be one of %v", s, discoveryModes)
+	}
+
+	return m, nil
+}
 
 // Base is one validated catalog base metric definition.
 type Base struct {
@@ -87,10 +136,11 @@ var fixedBaseSpecs = map[string]fixedBaseSpec{
 // arbitrary PromQL expression (metric-gateway.md §8).
 var seriesNamePattern = regexp.MustCompile(`^[a-zA-Z_:][a-zA-Z0-9_:]*$`)
 
-// Load decodes, validates, and expands a catalog ConfigMap document.
-// maxDiscoveryMetrics rejects catalogs whose expanded discovery entries
-// would exceed the configured --discovery-max-metrics ceiling.
-func Load(data []byte, maxDiscoveryMetrics int) (*Catalog, error) {
+// Load decodes, validates, and expands a catalog ConfigMap document,
+// advertising discovery entries according to mode. maxDiscoveryMetrics
+// rejects catalogs whose advertised discovery entries would exceed the
+// configured --discovery-max-metrics ceiling.
+func Load(data []byte, mode DiscoveryMode, maxDiscoveryMetrics int) (*Catalog, error) {
 	var raw rawCatalog
 	if err := yaml.UnmarshalStrict(data, &raw); err != nil {
 		return nil, fmt.Errorf("catalog: decoding: %w", err)
@@ -109,7 +159,19 @@ func Load(data []byte, maxDiscoveryMetrics int) (*Catalog, error) {
 		bases[name] = base
 	}
 
-	entries := discoveryEntries(bases)
+	var stats []Stat
+	var windows []Window
+	switch mode {
+	case DiscoveryFull:
+		stats, windows = Stats(), Windows()
+	case DiscoveryMinimal:
+		stats, windows = []Stat{MinimalStat}, []Window{MinimalWindow}
+	case DiscoveryNone:
+	default:
+		return nil, fmt.Errorf("catalog: unknown discovery mode %q", mode)
+	}
+
+	entries := discoveryEntries(bases, stats, windows)
 	if len(entries) > maxDiscoveryMetrics {
 		return nil, fmt.Errorf("catalog: %d discovery entries exceeds the configured maximum of %d", len(entries), maxDiscoveryMetrics)
 	}
@@ -181,10 +243,10 @@ func resourcesFor(scope Scope) []resourceScope {
 	return podScopedResources
 }
 
-// discoveryEntries expands bases into the full set of
+// discoveryEntries expands bases × stats × windows into the
 // provider.CustomMetricInfo entries ListAllMetrics returns, in a
 // deterministic order.
-func discoveryEntries(bases map[string]Base) []provider.CustomMetricInfo {
+func discoveryEntries(bases map[string]Base, stats []Stat, windows []Window) []provider.CustomMetricInfo {
 	names := make([]string, 0, len(bases))
 	for name := range bases {
 		names = append(names, name)
@@ -195,8 +257,8 @@ func discoveryEntries(bases map[string]Base) []provider.CustomMetricInfo {
 	for _, name := range names {
 		base := bases[name]
 		for _, res := range resourcesFor(base.Scope) {
-			for _, stat := range Stats() {
-				for _, window := range Windows() {
+			for _, stat := range stats {
+				for _, window := range windows {
 					entries = append(entries, provider.CustomMetricInfo{
 						GroupResource: res.groupResource,
 						Namespaced:    res.namespaced,

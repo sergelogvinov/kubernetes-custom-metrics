@@ -22,6 +22,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/catalog"
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/prometheus"
 	"github.com/spf13/pflag"
 )
 
@@ -43,6 +45,7 @@ const (
 	flagCatalogPath           = "catalog-path"
 	flagCronJobFallbackWindow = "cronjob-fallback-window"
 	flagDiscoveryMaxMetrics   = "discovery-max-metrics"
+	flagDiscoveryMode         = "discovery-mode"
 
 	envCluster               = "CLUSTER"
 	envPrometheusURL         = "PROMETHEUS_URL"
@@ -61,15 +64,16 @@ const (
 	envCatalogPath           = "CATALOG_PATH"
 	envCronJobFallbackWindow = "CRONJOB_FALLBACK"
 	envDiscoveryMaxMetrics   = "DISCOVERY_MAX"
+	envDiscoveryMode         = "DISCOVERY_MODE"
 )
 
 const (
-	defaultPrometheusTimeout     = 10 * time.Second
-	defaultPrometheusMaxConns    = 100
-	defaultRequestTimeout        = 30 * time.Second
+	defaultPrometheusTimeout     = prometheus.DefaultTimeout
+	defaultPrometheusMaxConns    = prometheus.DefaultMaxConns
+	defaultRequestTimeout        = 10 * time.Second
 	defaultMaxInflightRequests   = 128
 	defaultMaxSharedComputations = 32
-	defaultMaxConcurrentQueries  = 16
+	defaultMaxConcurrentQueries  = prometheus.DefaultMaxConcurrentQueries
 	defaultCacheTTLShort         = 15 * time.Second
 	defaultCacheTTLLong          = 10 * time.Minute
 	defaultCacheSize             = 10000
@@ -77,6 +81,7 @@ const (
 	defaultCatalogPath           = "/etc/custom-metrics/catalog.yaml"
 	defaultCronJobFallbackWindow = 24 * time.Hour
 	defaultDiscoveryMaxMetrics   = 1000
+	defaultDiscoveryMode         = catalog.DiscoveryMinimal
 )
 
 // Options holds the effective value of every gateway-specific flag, after
@@ -106,6 +111,7 @@ type Options struct {
 	CatalogPath           string
 	CronJobFallbackWindow time.Duration
 	DiscoveryMaxMetrics   int
+	DiscoveryMode         catalog.DiscoveryMode
 }
 
 // NewOptions returns Options bound to their documented hardcoded defaults.
@@ -124,6 +130,7 @@ func NewOptions() *Options {
 		CatalogPath:           defaultCatalogPath,
 		CronJobFallbackWindow: defaultCronJobFallbackWindow,
 		DiscoveryMaxMetrics:   defaultDiscoveryMaxMetrics,
+		DiscoveryMode:         defaultDiscoveryMode,
 	}
 }
 
@@ -148,6 +155,26 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.CatalogPath, flagCatalogPath, o.CatalogPath, "Path to the catalog ConfigMap YAML")
 	fs.DurationVar(&o.CronJobFallbackWindow, flagCronJobFallbackWindow, o.CronJobFallbackWindow, "CronJob recent-Job fallback lookback")
 	fs.IntVar(&o.DiscoveryMaxMetrics, flagDiscoveryMaxMetrics, o.DiscoveryMaxMetrics, "Discovery resource/metric entry cap")
+	fs.Var((*discoveryModeValue)(&o.DiscoveryMode), flagDiscoveryMode,
+		"Metrics advertised in discovery: full, minimal (one example per base and resource), or none; all names are served regardless")
+}
+
+// discoveryModeValue adapts catalog.DiscoveryMode to pflag.Value so an
+// invalid --discovery-mode is rejected at parse time, with the same
+// normalization and error as DISCOVERY_MODE.
+type discoveryModeValue catalog.DiscoveryMode
+
+func (v *discoveryModeValue) String() string { return string(*v) }
+func (v *discoveryModeValue) Type() string   { return "string" }
+
+func (v *discoveryModeValue) Set(s string) error {
+	m, err := catalog.ParseDiscoveryMode(s)
+	if err != nil {
+		return err
+	}
+	*v = discoveryModeValue(m)
+
+	return nil
 }
 
 // ResolveEnvironment overrides every field whose flag was not explicitly
@@ -221,6 +248,15 @@ func (o *Options) ResolveEnvironment(changed func(name string) bool, lookupEnv f
 	}
 	if err := resolveIntEnv(&o.DiscoveryMaxMetrics, changed, lookupEnv, flagDiscoveryMaxMetrics, envDiscoveryMaxMetrics); err != nil {
 		return err
+	}
+	if !changed(flagDiscoveryMode) {
+		if v, ok := lookupEnv(envDiscoveryMode); ok {
+			m, err := catalog.ParseDiscoveryMode(v)
+			if err != nil {
+				return &usageError{err: fmt.Errorf("environment variable %s (--%s): %w", envDiscoveryMode, flagDiscoveryMode, err)}
+			}
+			o.DiscoveryMode = m
+		}
 	}
 
 	return nil
@@ -317,6 +353,9 @@ func (o *Options) Validate() error {
 	}
 	if o.DiscoveryMaxMetrics <= 0 {
 		return positiveError(flagDiscoveryMaxMetrics, o.DiscoveryMaxMetrics)
+	}
+	if !o.DiscoveryMode.Valid() {
+		return &usageError{err: fmt.Errorf("--%s must be one of %v, got %q", flagDiscoveryMode, catalog.DiscoveryModes(), o.DiscoveryMode)}
 	}
 
 	return nil

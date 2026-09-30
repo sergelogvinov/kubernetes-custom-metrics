@@ -50,6 +50,8 @@ func (e *usageError) Error() string { return e.err.Error() }
 func (e *usageError) Unwrap() error { return e.err }
 
 func main() {
+	quietClientDisconnects()
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	code := run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	stop()
@@ -134,7 +136,7 @@ func newGatewayAdapter() *gatewayAdapter {
 // is exercised identically in both. It is factored out of NewRootCommand's
 // RunE for exactly that reason.
 func runAdapter(ctx context.Context, adapter *gatewayAdapter, opts *Options, dynamicClient dynamic.Interface) error {
-	cat, err := loadCatalog(opts.CatalogPath, opts.DiscoveryMaxMetrics)
+	cat, err := loadCatalog(opts.CatalogPath, opts.DiscoveryMode, opts.DiscoveryMaxMetrics)
 	if err != nil {
 		return err
 	}

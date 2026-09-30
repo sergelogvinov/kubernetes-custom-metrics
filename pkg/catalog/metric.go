@@ -47,7 +47,7 @@ func Stats() []Stat {
 // Window is a metric name's temporal-window segment (metric-gateway.md §2).
 // Any Go-duration-syntax string of at least MinWindow is a valid window
 // (e.g. "26m", "2h"); the seven Windows() values are just the canonical
-// set discovery advertises, not an exhaustive list of what the grammar
+// set DiscoveryFull advertises, not an exhaustive list of what the grammar
 // accepts.
 type Window string
 
@@ -59,7 +59,8 @@ type Window string
 const MinWindow = time.Minute
 
 // Supported windows, in the grammar's documented order. This is the
-// canonical, discoverable set (catalog.go's discoveryEntries) — not the
+// canonical set DiscoveryFull advertises (catalog.go's discoveryEntries;
+// DiscoveryMinimal advertises only MinimalWindow) — not the
 // full set of windows parseMetricName accepts, which is any positive
 // duration (Window.Duration).
 const (
@@ -72,10 +73,10 @@ const (
 	Window24h Window = "24h"
 )
 
-// Windows returns the grammar's canonical, discoverable windows in a fixed
-// order (metric-gateway.md §2). Arbitrary windows outside this set are
-// still valid metric names (Window.Duration); they are simply not
-// advertised in discovery.
+// Windows returns the grammar's canonical windows in a fixed order
+// (metric-gateway.md §2), the set DiscoveryFull advertises. Arbitrary
+// windows outside this set are still valid metric names (Window.Duration);
+// they are simply never advertised in discovery.
 func Windows() []Window {
 	return []Window{Window1m, Window5m, Window15m, Window1h, Window6h, Window12h, Window24h}
 }

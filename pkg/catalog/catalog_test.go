@@ -18,6 +18,7 @@ package catalog_test
 
 import (
 	_ "embed"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,7 +32,7 @@ var testdata []byte
 func TestLoad_FullCatalog(t *testing.T) {
 	data := testdata
 
-	cat, err := catalog.Load(data, catalog.MaxDiscoveryMetrics)
+	cat, err := catalog.Load(data, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -57,11 +58,11 @@ func TestLoad_FullCatalog(t *testing.T) {
 func TestLoad_TwoLoadsOfSameBytesAgree(t *testing.T) {
 	data := testdata
 
-	a, err := catalog.Load(data, catalog.MaxDiscoveryMetrics)
+	a, err := catalog.Load(data, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	b, err := catalog.Load(data, catalog.MaxDiscoveryMetrics)
+	b, err := catalog.Load(data, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -74,7 +75,7 @@ func TestLoad_TwoLoadsOfSameBytesAgree(t *testing.T) {
 func TestLoad_DifferentBytesDifferentRevision(t *testing.T) {
 	full := testdata
 
-	a, err := catalog.Load(full, catalog.MaxDiscoveryMetrics)
+	a, err := catalog.Load(full, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics)
 	if err != nil {
 		t.Fatalf("Load(full): %v", err)
 	}
@@ -87,7 +88,7 @@ bases:
     scope: pod
     aggregation: sum-then-stat
 `)
-	b, err := catalog.Load(cpuOnly, catalog.MaxDiscoveryMetrics)
+	b, err := catalog.Load(cpuOnly, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics)
 	if err != nil {
 		t.Fatalf("Load(cpuOnly): %v", err)
 	}
@@ -104,7 +105,7 @@ bases:
 }
 
 func TestLoad_RejectsEmptyCatalog(t *testing.T) {
-	if _, err := catalog.Load([]byte(`bases: {}`), catalog.MaxDiscoveryMetrics); err == nil {
+	if _, err := catalog.Load([]byte(`bases: {}`), catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics); err == nil {
 		t.Error("Load(empty bases) succeeded, want error")
 	}
 }
@@ -119,7 +120,7 @@ bases:
     aggregation: sum-then-stat
 extra: not-allowed
 `)
-	if _, err := catalog.Load(data, catalog.MaxDiscoveryMetrics); err == nil {
+	if _, err := catalog.Load(data, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics); err == nil {
 		t.Error("Load(unknown top-level field) succeeded, want error")
 	}
 }
@@ -134,7 +135,7 @@ bases:
     aggregation: sum-then-stat
     extra: not-allowed
 `)
-	if _, err := catalog.Load(data, catalog.MaxDiscoveryMetrics); err == nil {
+	if _, err := catalog.Load(data, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics); err == nil {
 		t.Error("Load(unknown base field) succeeded, want error")
 	}
 }
@@ -148,7 +149,7 @@ bases:
     scope: pod
     aggregation: sum-then-stat
 `)
-	if _, err := catalog.Load(data, catalog.MaxDiscoveryMetrics); err == nil {
+	if _, err := catalog.Load(data, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics); err == nil {
 		t.Error("Load(unknown base name) succeeded, want error")
 	}
 }
@@ -162,7 +163,7 @@ bases:
     scope: pod
     aggregation: sum-then-stat
 `)
-	if _, err := catalog.Load(data, catalog.MaxDiscoveryMetrics); err == nil {
+	if _, err := catalog.Load(data, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics); err == nil {
 		t.Error("Load(PromQL expression as series) succeeded, want error")
 	}
 }
@@ -176,7 +177,7 @@ bases:
     scope: pod
     aggregation: sum-then-stat
 `)
-	if _, err := catalog.Load(data, catalog.MaxDiscoveryMetrics); err == nil {
+	if _, err := catalog.Load(data, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics); err == nil {
 		t.Error("Load(wrong unit) succeeded, want error")
 	}
 }
@@ -190,7 +191,7 @@ bases:
     scope: node
     aggregation: sum-then-stat
 `)
-	if _, err := catalog.Load(data, catalog.MaxDiscoveryMetrics); err == nil {
+	if _, err := catalog.Load(data, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics); err == nil {
 		t.Error("Load(wrong scope) succeeded, want error")
 	}
 }
@@ -204,7 +205,7 @@ bases:
     scope: pod
     aggregation: average-then-sum
 `)
-	if _, err := catalog.Load(data, catalog.MaxDiscoveryMetrics); err == nil {
+	if _, err := catalog.Load(data, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics); err == nil {
 		t.Error("Load(unknown aggregation) succeeded, want error")
 	}
 }
@@ -218,7 +219,7 @@ bases:
     scope: pod
     aggregation: raw
 `)
-	cat, err := catalog.Load(data, catalog.MaxDiscoveryMetrics)
+	cat, err := catalog.Load(data, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -241,7 +242,7 @@ bases:
     scope: node
     aggregation: raw
 `)
-	cat, err := catalog.Load(data, catalog.MaxDiscoveryMetrics)
+	cat, err := catalog.Load(data, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -258,15 +259,98 @@ bases:
 func TestLoad_RejectsExceedingDiscoveryMax(t *testing.T) {
 	data := testdata
 
-	if _, err := catalog.Load(data, 10); err == nil {
+	if _, err := catalog.Load(data, catalog.DiscoveryFull, 10); err == nil {
 		t.Error("Load(maxDiscoveryMetrics=10) succeeded for the 784-entry catalog, want error")
+	}
+}
+
+func TestLoad_Modes(t *testing.T) {
+	cases := []struct {
+		mode catalog.DiscoveryMode
+		want int
+	}{
+		{catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics},
+		// (6 namespaced resources × 2 pod bases + 1 node resource × 2 node bases).
+		{catalog.DiscoveryMinimal, 14},
+		{catalog.DiscoveryNone, 0},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			cat, err := catalog.Load(testdata, tc.mode, catalog.MaxDiscoveryMetrics)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := len(cat.Entries()); got != tc.want {
+				t.Errorf("len(Entries()) = %d, want %d", got, tc.want)
+			}
+			// Discovery mode never narrows what the grammar serves.
+			if _, ok := cat.Parse("cpu_p95_26m"); !ok {
+				t.Error(`Parse("cpu_p95_26m") failed`)
+			}
+		})
+	}
+}
+
+func TestLoad_MinimalAdvertisesCanonicalExample(t *testing.T) {
+	cat, err := catalog.Load(testdata, catalog.DiscoveryMinimal, catalog.MaxDiscoveryMetrics)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	for _, e := range cat.Entries() {
+		parsed, ok := cat.Parse(e.Metric)
+		if !ok {
+			t.Errorf("advertised metric %q does not parse", e.Metric)
+
+			continue
+		}
+		if parsed.Stat != catalog.MinimalStat || parsed.Window != catalog.MinimalWindow {
+			t.Errorf("advertised metric %q: stat/window = %s/%s, want %s/%s", e.Metric, parsed.Stat, parsed.Window, catalog.MinimalStat, catalog.MinimalWindow)
+		}
+	}
+}
+
+func TestLoad_MaxAppliesToAdvertisedEntries(t *testing.T) {
+	if _, err := catalog.Load(testdata, catalog.DiscoveryMinimal, 14); err != nil {
+		t.Errorf("Load(minimal, max=14): %v", err)
+	}
+	if _, err := catalog.Load(testdata, catalog.DiscoveryMinimal, 13); err == nil {
+		t.Error("Load(minimal, max=13) succeeded, want error")
+	}
+}
+
+func TestLoad_RejectsUnknownMode(t *testing.T) {
+	if _, err := catalog.Load(testdata, "partial", catalog.MaxDiscoveryMetrics); err == nil {
+		t.Error(`Load(mode="partial") succeeded, want error`)
+	}
+}
+
+func TestParseDiscoveryMode(t *testing.T) {
+	cases := []struct {
+		in   string
+		want catalog.DiscoveryMode
+	}{
+		{"full", catalog.DiscoveryFull},
+		{"Minimal", catalog.DiscoveryMinimal},
+		{" NONE\t", catalog.DiscoveryNone},
+	}
+	for _, tc := range cases {
+		got, err := catalog.ParseDiscoveryMode(tc.in)
+		if err != nil || got != tc.want {
+			t.Errorf("ParseDiscoveryMode(%q) = (%q, %v), want %q", tc.in, got, err, tc.want)
+		}
+	}
+
+	_, err := catalog.ParseDiscoveryMode("partial")
+	if err == nil || !strings.Contains(err.Error(), "full minimal none") {
+		t.Errorf(`ParseDiscoveryMode("partial") err = %v, want an error listing the valid modes`, err)
 	}
 }
 
 func TestDiscoveryEntries_ResourceShape(t *testing.T) {
 	data := testdata
 
-	cat, err := catalog.Load(data, catalog.MaxDiscoveryMetrics)
+	cat, err := catalog.Load(data, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -304,7 +388,7 @@ func TestDiscoveryEntries_ResourceShape(t *testing.T) {
 func TestParseMetricName_RoundTripsAllGrammarCombinations(t *testing.T) {
 	data := testdata
 
-	cat, err := catalog.Load(data, catalog.MaxDiscoveryMetrics)
+	cat, err := catalog.Load(data, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -341,7 +425,7 @@ func TestParseMetricName_RoundTripsAllGrammarCombinations(t *testing.T) {
 func TestParseMetricName_RejectsMalformed(t *testing.T) {
 	data := testdata
 
-	cat, err := catalog.Load(data, catalog.MaxDiscoveryMetrics)
+	cat, err := catalog.Load(data, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -369,7 +453,7 @@ func TestParseMetricName_RejectsMalformed(t *testing.T) {
 func TestParseMetricName_AcceptsArbitraryWindows(t *testing.T) {
 	data := testdata
 
-	cat, err := catalog.Load(data, catalog.MaxDiscoveryMetrics)
+	cat, err := catalog.Load(data, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -398,7 +482,7 @@ func TestParseMetricName_AcceptsArbitraryWindows(t *testing.T) {
 func TestParseMetricName_RejectsWindowsBelowMinimum(t *testing.T) {
 	data := testdata
 
-	cat, err := catalog.Load(data, catalog.MaxDiscoveryMetrics)
+	cat, err := catalog.Load(data, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -443,7 +527,7 @@ bases:
     scope: pod
     aggregation: sum-then-stat
 `)
-	cat, err := catalog.Load(cpuOnly, catalog.MaxDiscoveryMetrics)
+	cat, err := catalog.Load(cpuOnly, catalog.DiscoveryFull, catalog.MaxDiscoveryMetrics)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

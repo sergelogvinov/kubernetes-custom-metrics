@@ -326,9 +326,9 @@ Prometheus responses must be checked for protocol errors, warnings/partial data,
 - YAML decoding with unknown-field rejection;
 - base-name validation;
 - normalized series/unit/scope/aggregation validation;
-- expansion into applicable resource/metric discovery entries, exposed as `[]provider.CustomMetricInfo` (the upstream type: `GroupResource`, `Namespaced`, `Metric`) for `ListAllMetrics` — this repository does not define its own metric-info type;
+- expansion into applicable resource/metric discovery entries according to `--discovery-mode` (`full`: every stat × canonical window; `minimal`, the default: one `<base>_avg_5m` example per resource; `none`), exposed as `[]provider.CustomMetricInfo` (the upstream type: `GroupResource`, `Namespaced`, `Metric`) for `ListAllMetrics` — this repository does not define its own metric-info type;
 - metric parsing without relying on an ambiguous greedy regular expression;
-- the discovery entry safety cap (784 entries for the full revised default catalog).
+- the discovery entry safety cap, applied to the advertised entries (784 for the full revised default catalog in `full` mode, 14 in `minimal`).
 
 Because base names contain underscores (`node_cpu`), parse by matching a known catalog base prefix and then validating stat/window segments. Do not split the name into exactly three underscore-separated fields.
 
