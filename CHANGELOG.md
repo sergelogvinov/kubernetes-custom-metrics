@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.0](https://github.com/sergelogvinov/kubernetes-custom-metrics/compare/v0.1.0...v0.2.0) (2026-09-30)
+
+
+### Features
+
+* add discovery mode functionality ([93a6579](https://github.com/sergelogvinov/kubernetes-custom-metrics/commit/93a657953aa8e18eaeb2dea651e25920f337aea8))
+* brew release ([ba5c5f8](https://github.com/sergelogvinov/kubernetes-custom-metrics/commit/ba5c5f83bed9c5799038ea701eaed9d8dc4174e9))
+* certs by helm ([2650a9f](https://github.com/sergelogvinov/kubernetes-custom-metrics/commit/2650a9f6caa29c6e1aa319df5945aeddf0e03d82))
+
+
+### Bug Fixes
+
+* build release ([cbed4aa](https://github.com/sergelogvinov/kubernetes-custom-metrics/commit/cbed4aae5ef15548ae4d3b1ff8d5fc1a4458f88c))
+* commit message ([70dc540](https://github.com/sergelogvinov/kubernetes-custom-metrics/commit/70dc540ffa7b29ed427991745db48b667f9d2b30))
+* commit message ([a556248](https://github.com/sergelogvinov/kubernetes-custom-metrics/commit/a556248135dff3ef53ad2284f13a1d562cfae1af))
+* dependobot ([53ebd02](https://github.com/sergelogvinov/kubernetes-custom-metrics/commit/53ebd02c7cbfc990173f94ef0350848a0c449eda))
+* gh actions ([b39f02a](https://github.com/sergelogvinov/kubernetes-custom-metrics/commit/b39f02a3ba8a06b51ebdf713b7d743381137382b))
+
 ## [0.1.0](https://github.com/sergelogvinov/kubernetes-custom-metrics/compare/v0.0.1...v0.1.0) (2026-09-13)
 
 

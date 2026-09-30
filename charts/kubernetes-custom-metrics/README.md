@@ -1,6 +1,6 @@
 # kubernetes-custom-metrics
 
-![Version: 0.0.3](https://img.shields.io/badge/Version-0.0.3-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: v0.1.0](https://img.shields.io/badge/AppVersion-v0.1.0-informational?style=flat-square)
+![Version: 0.0.4](https://img.shields.io/badge/Version-0.0.4-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: v0.2.0](https://img.shields.io/badge/AppVersion-v0.2.0-informational?style=flat-square)
 
 Kubernetes Custom Metrics
 
@@ -15,6 +15,18 @@ Kubernetes Custom Metrics
 ## Source Code
 
 * <https://github.com/sergelogvinov/kubernetes-custom-metrics>
+
+Making historical metrics available through the Kubernetes API (custom.metrics.k8s.io)
+also allows Kubernetes addons, operators, and custom controllers to use this data directly.
+They can make decisions based on how workloads behaved over time, instead of using only the current resource usage.
+
+## Installation
+
+```shell
+helm upgrade --install kubernetes-custom-metrics \
+  oci://ghcr.io/sergelogvinov/charts/kubernetes-custom-metrics \
+  --namespace kube-system --set-string args="--prometheus-url=http://prometheus-server"
+```
 
 ## Values
 
@@ -37,7 +49,7 @@ Kubernetes Custom Metrics
 | podAnnotations | object | `{}` | Annotations for pod. ref: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/ |
 | podlabels | object | `{}` | Extra labels for pod. ref: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/ |
 | podSecurityContext | object | `{"fsGroup":65532,"fsGroupChangePolicy":"OnRootMismatch","runAsGroup":65532,"runAsUser":65532}` | Pod Security Context. ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-pod |
-| securityContext | object | `{"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":false,"runAsNonRoot":true,"runAsUser":65532}` | Container Security Context. ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-pod |
+| securityContext | object | `{"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}` | Container Security Context. ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-pod |
 | service | object | `{"ipFamilies":["IPv4"],"port":443,"type":"ClusterIP"}` | Service parameters ref: https://kubernetes.io/docs/user-guide/services/ |
 | service.type | string | `"ClusterIP"` | This sets the service refs: https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types |
 | service.port | int | `443` | This sets the ports refs: https://kubernetes.io/docs/concepts/services-networking/service/#field-spec-ports |
