@@ -2,6 +2,10 @@
 version: 2
 project_name: kubernetes-custom-metrics
 
+before:
+  hooks:
+    - go mod download
+
 dist: bin
 builds:
   - id: custom-metrics
@@ -74,6 +78,11 @@ homebrew_casks:
       name: homebrew-tap
       branch: main
       token: "{{ .Env.HOMEBREW_TOKEN }}"
+
+    # Bug in goreleaser v2.17.1?
+    # https://goreleaser.com/customization/publish/homebrew_casks/ without #{arch}
+    custom_block: |
+      arch arm: "arm64", intel: "amd64"
 
     binaries:
       - kubectl-ctop
