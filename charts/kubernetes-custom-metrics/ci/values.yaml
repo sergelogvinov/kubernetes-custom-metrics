@@ -1,11 +1,34 @@
 image:
   pullPolicy: Always
-  tag: edge-amd64
+  tag: edge-arm64
 
 args:
   - --v=4
   # - --cluster=test
   - --prometheus-url=http://vmsingle-vm.monitoring.svc:8429
+
+config:
+  bases:
+    cpu:
+      series: container_cpu_usage_seconds_total
+      unit: cores
+      scope: pod
+      aggregation: raw
+    memory:
+      series: container_memory_working_set_bytes
+      unit: bytes
+      scope: pod
+      aggregation: raw
+    node_cpu:
+      series: node_cpu_usage_cores
+      unit: cores
+      scope: node
+      aggregation: raw
+    node_memory:
+      series: node_memory_used_bytes
+      unit: bytes
+      scope: node
+      aggregation: raw
 
 tls:
   type: "helm"
