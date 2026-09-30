@@ -91,12 +91,12 @@ lint: ## Lint Code
 vet: ## Vet code
 	go vet ./...
 
-.PHONY: test
-test: ## Run all tests with the race detector
+.PHONY: unit
+unit:  ## Run all tests with the race detector
 	go test -race -count=1 ./...
 
-.PHONY: unit
-unit: lint test ## Run unit tests
+.PHONY: test
+test: lint unit ## Run unit tests
 
 .PHONY: test-rules
 test-rules: ## Run promtool against normalized recording-rule fixtures
