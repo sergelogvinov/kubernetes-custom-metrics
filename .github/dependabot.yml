@@ -17,12 +17,10 @@ updates:
     cooldown:
       default-days: 7
     groups:
-      docker:
-        patterns:
-          - "docker/*"
       actions:
         patterns:
           - "actions/*"
+          - "docker/*"
 
   - package-ecosystem: "gomod"
     directory: "/"
@@ -41,8 +39,12 @@ updates:
       main:
         patterns:
           - "k8s.io/*"
-          - "sigs.k8s.io/custom-metrics-apiserver"
+          - "sigs.k8s.io/*"
           - "github.com/prometheus/*"
+      spf13:
+        patterns:
+          - "github.com/spf13/cobra"
+          - "github.com/spf13/pflag"
 
   - package-ecosystem: "docker"
     directory: "/"
