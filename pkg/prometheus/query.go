@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/catalog"
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/resource"
 )
 
 // quantity is the physical quantity a request measures, derived from the
@@ -81,7 +82,7 @@ type request struct {
 	Series string
 	// Scope and Quantity together select the fixed lifecycle/completeness
 	// series names, independent of Series' configured name.
-	Scope    catalog.Scope
+	Scope    resource.Scope
 	Quantity quantity
 	// Aggregation selects sum-then-stat, stat-then-sum or raw.
 	Aggregation catalog.Aggregation
@@ -90,11 +91,11 @@ type request struct {
 	Window time.Duration
 	// Namespace scopes pod-scoped queries; empty for node scope.
 	Namespace string
-	// Names is the exact, deduplicated, escaped identity set to aggregate:
-	// pod names for pod scope, a single node name for node scope. Must
-	// never be empty — an empty selection must never become an
-	// unrestricted query (metric-gateway.md §3.3).
-	Names []string
+	// Members are the exact, deduplicated identities to aggregate: pod
+	// names for pod scope, a single node name for node scope. Must never be
+	// empty — an empty selection must never become an unrestricted query
+	// (metric-gateway.md §3.3).
+	Members []string
 }
 
 // Sentinel/typed errors Evaluate can return, distinguishing the
@@ -126,8 +127,8 @@ func alignToGrid(t time.Time) time.Time {
 }
 
 // activeSeriesName returns the fixed lifecycle series name for scope.
-func activeSeriesName(scope catalog.Scope) string {
-	if scope == catalog.ScopeNode {
+func activeSeriesName(scope resource.Scope) string {
+	if scope == resource.ScopeNode {
 		return "node_active"
 	}
 
@@ -139,8 +140,8 @@ func activeSeriesName(scope catalog.Scope) string {
 // both quantities: both usage series come from the same node-exporter
 // scrape, so node_cpu_complete and node_memory_complete would always be
 // identical (monitoring/rules.yaml).
-func completeSeriesName(scope catalog.Scope, quantity quantity) string {
-	if scope == catalog.ScopeNode {
+func completeSeriesName(scope resource.Scope, quantity quantity) string {
+	if scope == resource.ScopeNode {
 		return "node_complete"
 	}
 	if quantity == quantityCPU {
@@ -155,8 +156,8 @@ var nameMetaRegexp = regexp.MustCompile(`[.+*?()|[\]{}^$\\]`)
 // identityLabel returns the label name a scope's identities are matched
 // on: node names identify node-scoped series, pod names identify
 // pod-scoped ones.
-func identityLabel(scope catalog.Scope) string {
-	if scope == catalog.ScopeNode {
+func identityLabel(scope resource.Scope) string {
+	if scope == resource.ScopeNode {
 		return "node"
 	}
 
@@ -271,12 +272,12 @@ func wrapStat(stat catalog.Stat, rangeVector string) (string, error) {
 // required here so every member's statistic covers the same union-active
 // grid width, not just the instants it happened to report a sample.
 func renderUsage(req request) (string, error) {
-	if len(req.Names) == 0 {
+	if len(req.Members) == 0 {
 		return "", ErrEmptySelection
 	}
 
 	idLabel := identityLabel(req.Scope)
-	sel := selector(req.Series, req.Cluster, req.Namespace, idLabel, req.Names)
+	sel := selector(req.Series, req.Cluster, req.Namespace, idLabel, req.Members)
 	window := formatWindow(req.Window)
 
 	switch req.Aggregation {
@@ -286,7 +287,7 @@ func renderUsage(req request) (string, error) {
 		return wrapStat(req.Stat, rangeVector)
 
 	case catalog.AggregationStatThenSum:
-		activeSel := selector(activeSeriesName(req.Scope), req.Cluster, req.Namespace, idLabel, req.Names)
+		activeSel := selector(activeSeriesName(req.Scope), req.Cluster, req.Namespace, idLabel, req.Members)
 		zeroFilled := fmt.Sprintf("(%s or (%s == 0))", sel, activeSel)
 		rangeVector := fmt.Sprintf("%s[%s:%s]", zeroFilled, window, gridStep)
 
@@ -325,14 +326,14 @@ const rawNodeCPUModes = "user|nice|system|irq|softirq|steal"
 // active/completeness/freshness validation — Evaluate never issues the
 // any-active/coverage/freshness queries for this aggregation (client.go).
 func renderRawUsage(req request) (string, error) {
-	if len(req.Names) == 0 {
+	if len(req.Members) == 0 {
 		return "", ErrEmptySelection
 	}
 
 	switch req.Scope {
-	case catalog.ScopePod:
+	case resource.ScopePod:
 		return renderRawPodUsage(req)
-	case catalog.ScopeNode:
+	case resource.ScopeNode:
 		return renderRawNodeUsage(req)
 	default:
 		return "", fmt.Errorf("prometheus: aggregation %q: unknown scope %q", catalog.AggregationRaw, req.Scope)
@@ -357,7 +358,7 @@ func renderRawPodUsage(req request) (string, error) {
 	}
 
 	idLabel := identityLabel(req.Scope)
-	matchers := containerMatchers(req.Cluster, req.Namespace, idLabel, req.Names)
+	matchers := containerMatchers(req.Cluster, req.Namespace, idLabel, req.Members)
 
 	perContainer := fmt.Sprintf("%s{%s}", series, matchers)
 	if req.Quantity == quantityCPU {
@@ -379,7 +380,7 @@ func renderRawPodUsage(req request) (string, error) {
 // name — "kubernetes_node_name" is the label node-exporter's scrape
 // relabeling is expected to carry instead.
 func renderRawNodeUsage(req request) (string, error) {
-	matchers := nodeExporterMatchers(req.Cluster, req.Names)
+	matchers := nodeExporterMatchers(req.Cluster, req.Members)
 
 	var perIdentity string
 	switch req.Quantity {
@@ -438,11 +439,11 @@ func nodeExporterMatchers(cluster string, names []string) string {
 // otherwise — distinguishing a genuinely absent metric (404 for named
 // requests) from a coverage/freshness failure (metric-gateway.md §3.7).
 func renderAnyActive(req request) (string, error) {
-	if len(req.Names) == 0 {
+	if len(req.Members) == 0 {
 		return "", ErrEmptySelection
 	}
 
-	activeSel := selector(activeSeriesName(req.Scope), req.Cluster, req.Namespace, identityLabel(req.Scope), req.Names)
+	activeSel := selector(activeSeriesName(req.Scope), req.Cluster, req.Namespace, identityLabel(req.Scope), req.Members)
 
 	return fmt.Sprintf("max_over_time(count(%s == 1)[%s:%s])", activeSel, formatWindow(req.Window), gridStep), nil
 }
@@ -453,14 +454,14 @@ func renderAnyActive(req request) (string, error) {
 // combined completeness-signal and raw-series-gap check
 // (metric-gateway.md §3.7).
 func renderCoverage(req request) (string, error) {
-	if len(req.Names) == 0 {
+	if len(req.Members) == 0 {
 		return "", ErrEmptySelection
 	}
 
 	idLabel := identityLabel(req.Scope)
-	activeSel := selector(activeSeriesName(req.Scope), req.Cluster, req.Namespace, idLabel, req.Names)
-	completeSel := selector(completeSeriesName(req.Scope, req.Quantity), req.Cluster, req.Namespace, idLabel, req.Names)
-	usageSel := selector(req.Series, req.Cluster, req.Namespace, idLabel, req.Names)
+	activeSel := selector(activeSeriesName(req.Scope), req.Cluster, req.Namespace, idLabel, req.Members)
+	completeSel := selector(completeSeriesName(req.Scope, req.Quantity), req.Cluster, req.Namespace, idLabel, req.Members)
+	usageSel := selector(req.Series, req.Cluster, req.Namespace, idLabel, req.Members)
 
 	badMembers := fmt.Sprintf(
 		"((%s == 1) unless on (%s) (%s == 1)) or ((%s == 1) unless on (%s) (%s))",
@@ -475,11 +476,11 @@ func renderCoverage(req request) (string, error) {
 // carried a sample; the caller rejects results over the 30-second
 // freshness gate (metric-gateway.md §3.7).
 func renderFreshness(req request) (string, error) {
-	if len(req.Names) == 0 {
+	if len(req.Members) == 0 {
 		return "", ErrEmptySelection
 	}
 
-	activeSel := selector(activeSeriesName(req.Scope), req.Cluster, req.Namespace, identityLabel(req.Scope), req.Names)
+	activeSel := selector(activeSeriesName(req.Scope), req.Cluster, req.Namespace, identityLabel(req.Scope), req.Members)
 
 	return fmt.Sprintf("max(max_over_time((time() - timestamp(%s == 1))[%s:%s]))", activeSel, formatWindow(req.Window), gridStep), nil
 }

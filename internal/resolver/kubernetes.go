@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/resource"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -29,20 +30,20 @@ import (
 	"k8s.io/client-go/dynamic"
 )
 
-// resourceInterfaceFor returns the dynamic client scoped to spec's resource,
+// resourceInterfaceFor returns the dynamic client scoped to kind's resource,
 // namespaced when namespace is non-empty.
-func (r *Resolver) resourceInterfaceFor(spec kindSpec, namespace string) dynamic.ResourceInterface {
-	if spec.namespaced && namespace != "" {
-		return r.client.Resource(spec.gvr).Namespace(namespace)
+func (r *Resolver) resourceInterfaceFor(kind resource.Kind, namespace string) dynamic.ResourceInterface {
+	if kind.Namespaced() && namespace != "" {
+		return r.client.Resource(kind.GVR()).Namespace(namespace)
 	}
 
-	return r.client.Resource(spec.gvr)
+	return r.client.Resource(kind.GVR())
 }
 
 // getObject fetches one named object, classifying NotFound/Forbidden errors
 // so callers get a resolver-typed error rather than a raw client-go one.
-func (r *Resolver) getObject(ctx context.Context, spec kindSpec, kind Kind, namespace, name string) (*unstructured.Unstructured, error) {
-	obj, err := r.resourceInterfaceFor(spec, namespace).Get(ctx, name, metav1.GetOptions{})
+func (r *Resolver) getObject(ctx context.Context, kind resource.Kind, namespace, name string) (*unstructured.Unstructured, error) {
+	obj, err := r.resourceInterfaceFor(kind, namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, classifyError(kind, namespace, name, err)
 	}
@@ -50,11 +51,11 @@ func (r *Resolver) getObject(ctx context.Context, spec kindSpec, kind Kind, name
 	return obj, nil
 }
 
-// listObjects lists every object of spec matching selector, following
+// listObjects lists every object of kind matching selector, following
 // continue tokens until exhausted (metric-gateway.md §6.3: bounded,
 // paginated lists).
-func (r *Resolver) listObjects(ctx context.Context, spec kindSpec, kind Kind, namespace string, selector labels.Selector) ([]unstructured.Unstructured, error) {
-	ri := r.resourceInterfaceFor(spec, namespace)
+func (r *Resolver) listObjects(ctx context.Context, kind resource.Kind, namespace string, selector labels.Selector) ([]unstructured.Unstructured, error) {
+	ri := r.resourceInterfaceFor(kind, namespace)
 
 	opts := metav1.ListOptions{Limit: r.pageSize}
 	if selector != nil && !selector.Empty() {
@@ -87,7 +88,7 @@ func (r *Resolver) listObjects(ctx context.Context, spec kindSpec, kind Kind, na
 // object becomes *NotFoundError (404 for the caller); missing RBAC for the
 // gateway ServiceAccount becomes *ForbiddenError (503 for the caller, never
 // 403 — metric-gateway.md §3.3).
-func classifyError(kind Kind, namespace, name string, err error) error {
+func classifyError(kind resource.Kind, namespace, name string, err error) error {
 	switch {
 	case apierrors.IsNotFound(err):
 		return &NotFoundError{Kind: kind, Namespace: namespace, Name: name, Message: err.Error()}
@@ -144,7 +145,7 @@ func (r *Resolver) unionPodNames(ctx context.Context, namespace string, selector
 	var names []string
 
 	for _, selector := range selectors {
-		pods, err := r.listObjects(ctx, kindSpecs[KindPod], KindPod, namespace, selector)
+		pods, err := r.listObjects(ctx, resource.Pod, namespace, selector)
 		if err != nil {
 			return nil, err
 		}

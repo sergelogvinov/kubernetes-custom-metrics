@@ -101,17 +101,6 @@ const (
 	UnitBytes Unit = "bytes"
 )
 
-// Scope is a base's fixed applicability: pod-scoped bases apply to Pods and
-// the five namespaced workload kinds; node-scoped bases apply only to Nodes
-// (metric-gateway.md §2, §8).
-type Scope string
-
-// The two fixed scopes the catalog's four base names use.
-const (
-	ScopePod  Scope = "pod"
-	ScopeNode Scope = "node"
-)
-
 // Aggregation selects how a pod-scoped base combines multiple pods' temporal
 // statistics into one workload value (metric-gateway.md §3.2), or opts a
 // base out of the normalized input contract entirely.

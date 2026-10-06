@@ -27,6 +27,7 @@ import (
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/cache"
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/catalog"
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/prometheus"
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/resource"
 )
 
 // Resolver is the small interface Service needs — exactly
@@ -131,12 +132,15 @@ func (s *Service) get(ctx context.Context, req Request) (Result, error) {
 		return Result{}, &metricNotSupportedError{req: req}
 	}
 
-	spec, ok := kindForGroupResource(req.GroupResource, parsed.Base)
-	if !ok {
+	// An unsupported resource, or a base whose scope does not fit it (for
+	// example node_cpu on a Pod), is simply not advertised: 404
+	// (metric-gateway.md §2).
+	kind, ok := resource.Lookup(req.GroupResource)
+	if !ok || kind.Scope() != parsed.Base.Scope {
 		return Result{}, &metricNotSupportedError{req: req}
 	}
 
-	resourceLabel := string(spec.kind)
+	resourceLabel := string(kind)
 
 	// Step 2: canonicalize both selectors and form the cache key.
 	key := cache.Key{
@@ -179,7 +183,7 @@ func (s *Service) get(ctx context.Context, req Request) (Result, error) {
 		}
 		defer releaseComputation()
 
-		return s.compute(flightCtx, req, spec, parsed, key)
+		return s.compute(flightCtx, req, kind, parsed, key)
 	})
 	if shared {
 		s.recordCollapsed()
@@ -190,9 +194,9 @@ func (s *Service) get(ctx context.Context, req Request) (Result, error) {
 
 // compute implements steps 5-8: resolve, evaluate every resolved object
 // in one computation, build and cache the result.
-func (s *Service) compute(ctx context.Context, req Request, spec kindSpec, parsed catalog.ParsedMetric, key cache.Key) (Result, error) {
+func (s *Service) compute(ctx context.Context, req Request, kind resource.Kind, parsed catalog.ParsedMetric, key cache.Key) (Result, error) {
 	target := resolver.Target{
-		Kind:           spec.kind,
+		Kind:           kind,
 		Namespace:      req.Namespace,
 		Name:           req.Name,
 		ObjectSelector: req.ObjectSelector,
@@ -200,16 +204,16 @@ func (s *Service) compute(ctx context.Context, req Request, spec kindSpec, parse
 
 	resolutions, err := s.resolver.Resolve(ctx, target)
 	if err != nil {
-		s.recordCronJobOutcome(spec.kind, err)
+		s.recordCronJobOutcome(kind, err)
 
 		return Result{}, err
 	}
 
 	targets := make([]prometheus.Target, len(resolutions))
 	for i, res := range resolutions {
-		s.recordCronJobFallback(spec.kind, res)
+		s.recordCronJobFallback(kind, res)
 
-		targets[i] = prometheus.Target{Name: res.Object.Name, Pods: res.PodNames}
+		targets[i] = prometheus.Target{Members: res.Members}
 	}
 
 	eval, err := s.evaluator.Evaluate(ctx, prometheus.Computation{
@@ -238,8 +242,8 @@ func (s *Service) compute(ctx context.Context, req Request, spec kindSpec, parse
 
 		res := resolutions[i]
 		items = append(items, Item{
-			APIVersion: spec.apiVersion,
-			Kind:       string(spec.kind),
+			APIVersion: kind.APIVersion(),
+			Kind:       string(kind),
 			Namespace:  res.Object.Namespace,
 			Name:       res.Object.Name,
 			UID:        res.Object.UID,
@@ -300,14 +304,14 @@ func (s *Service) recordQueryError(reason string) {
 	}
 }
 
-func (s *Service) recordCronJobFallback(kind resolver.Kind, res resolver.Resolution) {
-	if s.metrics != nil && kind == resolver.KindCronJob && res.CronJobFallback {
+func (s *Service) recordCronJobFallback(kind resource.Kind, res resolver.Resolution) {
+	if s.metrics != nil && kind == resource.CronJob && res.CronJobFallback {
 		s.metrics.CronJobFallback.Inc()
 	}
 }
 
-func (s *Service) recordCronJobOutcome(kind resolver.Kind, err error) {
-	if s.metrics == nil || kind != resolver.KindCronJob {
+func (s *Service) recordCronJobOutcome(kind resource.Kind, err error) {
+	if s.metrics == nil || kind != resource.CronJob {
 		return
 	}
 	if _, ok := errors.AsType[*resolver.NotFoundError](err); ok { //nolint:errcheck

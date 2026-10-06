@@ -26,7 +26,7 @@ import (
 )
 
 // Metrics holds every gateway self-metric. Labels always come from a small,
-// known set — a resolver.Kind name or a catalog-validated metric name —
+// known set — a resource.Kind name or a catalog-validated metric name —
 // never a namespace, object name, selector, or caller identity.
 type Metrics struct {
 	CacheHits             *metrics.CounterVec

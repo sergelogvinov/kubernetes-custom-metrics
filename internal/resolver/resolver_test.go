@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/resource"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -60,7 +61,7 @@ func TestResolve_PodNamed(t *testing.T) {
 	})
 	r := New(client)
 
-	got, err := r.Resolve(context.Background(), Target{Kind: KindPod, Namespace: "prod", Name: "web-0"})
+	got, err := r.Resolve(context.Background(), Target{Kind: resource.Pod, Namespace: "prod", Name: "web-0"})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -70,8 +71,8 @@ func TestResolve_PodNamed(t *testing.T) {
 	if got[0].Object.UID != "uid-web-0" || got[0].Object.Namespace != "prod" || got[0].Object.Name != "web-0" {
 		t.Errorf("Object = %+v", got[0].Object)
 	}
-	if want := []string{"web-0"}; !equalNames(got[0].PodNames, want) {
-		t.Errorf("PodNames = %v, want %v", got[0].PodNames, want)
+	if want := []string{"web-0"}; !equalNames(got[0].Members, want) {
+		t.Errorf("Members = %v, want %v", got[0].Members, want)
 	}
 }
 
@@ -81,7 +82,7 @@ func TestResolve_NodeNamed(t *testing.T) {
 	})
 	r := New(client)
 
-	got, err := r.Resolve(context.Background(), Target{Kind: KindNode, Name: "worker-1"})
+	got, err := r.Resolve(context.Background(), Target{Kind: resource.Node, Name: "worker-1"})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -91,8 +92,8 @@ func TestResolve_NodeNamed(t *testing.T) {
 	if got[0].Object.UID != "uid-worker-1" {
 		t.Errorf("Object.UID = %q, want uid-worker-1", got[0].Object.UID)
 	}
-	if len(got[0].PodNames) != 0 {
-		t.Errorf("PodNames = %v, want empty for a Node target", got[0].PodNames)
+	if want := []string{"worker-1"}; !equalNames(got[0].Members, want) {
+		t.Errorf("Members = %v, want %v (the Node's own name)", got[0].Members, want)
 	}
 }
 
@@ -100,13 +101,13 @@ func TestResolve_NamedNotFound(t *testing.T) {
 	client := newFakeClient()
 	r := New(client)
 
-	_, err := r.Resolve(context.Background(), Target{Kind: KindPod, Namespace: "prod", Name: "does-not-exist"})
+	_, err := r.Resolve(context.Background(), Target{Kind: resource.Pod, Namespace: "prod", Name: "does-not-exist"})
 
 	var notFound *NotFoundError
 	if !errors.As(err, &notFound) {
 		t.Fatalf("err = %v, want *NotFoundError", err)
 	}
-	if notFound.Kind != KindPod || notFound.Namespace != "prod" || notFound.Name != "does-not-exist" {
+	if notFound.Kind != resource.Pod || notFound.Namespace != "prod" || notFound.Name != "does-not-exist" {
 		t.Errorf("NotFoundError = %+v", notFound)
 	}
 }
@@ -131,7 +132,7 @@ func TestResolve_WorkloadMatchExpressionsSelector(t *testing.T) {
 	client := newFakeClient(deploy, matching1, matching2, nonMatching)
 	r := New(client)
 
-	got, err := r.Resolve(context.Background(), Target{Kind: KindDeployment, Namespace: "prod", Name: "web"})
+	got, err := r.Resolve(context.Background(), Target{Kind: resource.Deployment, Namespace: "prod", Name: "web"})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -142,8 +143,8 @@ func TestResolve_WorkloadMatchExpressionsSelector(t *testing.T) {
 		t.Errorf("Object.UID = %q, want uid-deploy-web", got[0].Object.UID)
 	}
 	want := []string{"web-0", "web-1"}
-	if !equalNames(got[0].PodNames, want) {
-		t.Errorf("PodNames = %v, want %v", got[0].PodNames, want)
+	if !equalNames(got[0].Members, want) {
+		t.Errorf("Members = %v, want %v", got[0].Members, want)
 	}
 }
 
@@ -152,22 +153,22 @@ func TestResolve_EachWorkloadKindUsesItsSpecSelector(t *testing.T) {
 	matching := pod("prod", "web-0", "uid-web-0", map[string]string{"app": "web"})
 
 	cases := []struct {
-		kind Kind
+		kind resource.Kind
 		obj  runtime.Object
 	}{
-		{KindDeployment, &appsv1.Deployment{
+		{resource.Deployment, &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "web", UID: types.UID("uid-w")},
 			Spec:       appsv1.DeploymentSpec{Selector: labelSelector},
 		}},
-		{KindStatefulSet, &appsv1.StatefulSet{
+		{resource.StatefulSet, &appsv1.StatefulSet{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "web", UID: types.UID("uid-w")},
 			Spec:       appsv1.StatefulSetSpec{Selector: labelSelector},
 		}},
-		{KindDaemonSet, &appsv1.DaemonSet{
+		{resource.DaemonSet, &appsv1.DaemonSet{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "web", UID: types.UID("uid-w")},
 			Spec:       appsv1.DaemonSetSpec{Selector: labelSelector},
 		}},
-		{KindJob, &batchv1.Job{
+		{resource.Job, &batchv1.Job{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "web", UID: types.UID("uid-w")},
 			Spec:       batchv1.JobSpec{Selector: labelSelector},
 		}},
@@ -182,8 +183,8 @@ func TestResolve_EachWorkloadKindUsesItsSpecSelector(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Resolve: %v", err)
 			}
-			if len(got) != 1 || len(got[0].PodNames) != 1 || got[0].PodNames[0] != "web-0" {
-				t.Errorf("got = %+v, want one Resolution with PodNames=[web-0]", got)
+			if len(got) != 1 || len(got[0].Members) != 1 || got[0].Members[0] != "web-0" {
+				t.Errorf("got = %+v, want one Resolution with Members=[web-0]", got)
 			}
 		})
 	}
@@ -240,7 +241,7 @@ func TestResolveCronJob_PrefersActiveJobs(t *testing.T) {
 	client := newFakeClient(cronJob, activeJob, recentJob, activePod, recentPod)
 	r := New(client, WithClock(clocktesting.NewFakePassiveClock(now)))
 
-	got, err := r.Resolve(context.Background(), Target{Kind: KindCronJob, Namespace: "prod", Name: "nightly"})
+	got, err := r.Resolve(context.Background(), Target{Kind: resource.CronJob, Namespace: "prod", Name: "nightly"})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -250,8 +251,8 @@ func TestResolveCronJob_PrefersActiveJobs(t *testing.T) {
 	// Only the active Job's pods are selected; the recent one is ignored
 	// because an active Job exists (metric-gateway.md §3.4 step 1).
 	want := []string{"active-pod"}
-	if !equalNames(got[0].PodNames, want) {
-		t.Errorf("PodNames = %v, want %v", got[0].PodNames, want)
+	if !equalNames(got[0].Members, want) {
+		t.Errorf("Members = %v, want %v", got[0].Members, want)
 	}
 	if got[0].CronJobFallback {
 		t.Error("CronJobFallback = true, want false when an active Job was used")
@@ -279,14 +280,14 @@ func TestResolveCronJob_FallsBackToRecentJobs(t *testing.T) {
 	client := newFakeClient(cronJob, recentJob, tooOldJob, recentPod, oldPod)
 	r := New(client, WithClock(clocktesting.NewFakePassiveClock(now)), WithCronJobFallbackWindow(24*time.Hour))
 
-	got, err := r.Resolve(context.Background(), Target{Kind: KindCronJob, Namespace: "prod", Name: "nightly"})
+	got, err := r.Resolve(context.Background(), Target{Kind: resource.CronJob, Namespace: "prod", Name: "nightly"})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 
 	want := []string{"recent-pod"}
-	if !equalNames(got[0].PodNames, want) {
-		t.Errorf("PodNames = %v, want %v (only the within-window Job)", got[0].PodNames, want)
+	if !equalNames(got[0].Members, want) {
+		t.Errorf("Members = %v, want %v (only the within-window Job)", got[0].Members, want)
 	}
 	if !got[0].CronJobFallback {
 		t.Error("CronJobFallback = false, want true when the recent-Jobs fallback was used")
@@ -306,7 +307,7 @@ func TestResolveCronJob_NoActiveOrRecentIs404(t *testing.T) {
 	client := newFakeClient(cronJob, tooOldJob)
 	r := New(client, WithClock(clocktesting.NewFakePassiveClock(now)), WithCronJobFallbackWindow(24*time.Hour))
 
-	_, err := r.Resolve(context.Background(), Target{Kind: KindCronJob, Namespace: "prod", Name: "nightly"})
+	_, err := r.Resolve(context.Background(), Target{Kind: resource.CronJob, Namespace: "prod", Name: "nightly"})
 
 	var notFound *NotFoundError
 	if !errors.As(err, &notFound) {
@@ -330,7 +331,7 @@ func TestResolveCronJob_UnrelatedJobIgnored(t *testing.T) {
 	client := newFakeClient(cronJob, unrelated)
 	r := New(client, WithClock(clocktesting.NewFakePassiveClock(now)))
 
-	_, err := r.Resolve(context.Background(), Target{Kind: KindCronJob, Namespace: "prod", Name: "nightly"})
+	_, err := r.Resolve(context.Background(), Target{Kind: resource.CronJob, Namespace: "prod", Name: "nightly"})
 
 	if _, ok := errors.AsType[*NotFoundError](err); !ok {
 		t.Fatalf("err = %v, want *NotFoundError (unrelated Job must not count)", err)
@@ -343,7 +344,7 @@ func TestResolve_PodRecreationChangesUID(t *testing.T) {
 	client := newFakeClient(pod("prod", "web-0", "uid-web-0-gen1", nil))
 	r := New(client)
 
-	first, err := r.Resolve(context.Background(), Target{Kind: KindPod, Namespace: "prod", Name: "web-0"})
+	first, err := r.Resolve(context.Background(), Target{Kind: resource.Pod, Namespace: "prod", Name: "web-0"})
 	if err != nil {
 		t.Fatalf("Resolve (gen1): %v", err)
 	}
@@ -352,15 +353,15 @@ func TestResolve_PodRecreationChangesUID(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := client.Resource(kindSpecs[KindPod].gvr).Namespace("prod").Delete(ctx, "web-0", metav1.DeleteOptions{}); err != nil {
+	if err := client.Resource(resource.Pod.GVR()).Namespace("prod").Delete(ctx, "web-0", metav1.DeleteOptions{}); err != nil {
 		t.Fatalf("deleting gen1 pod: %v", err)
 	}
 	recreated := pod("prod", "web-0", "uid-web-0-gen2", nil)
-	if _, err := client.Resource(kindSpecs[KindPod].gvr).Namespace("prod").Create(ctx, toUnstructured(t, recreated), metav1.CreateOptions{}); err != nil {
+	if _, err := client.Resource(resource.Pod.GVR()).Namespace("prod").Create(ctx, toUnstructured(t, recreated), metav1.CreateOptions{}); err != nil {
 		t.Fatalf("creating gen2 pod: %v", err)
 	}
 
-	second, err := r.Resolve(ctx, Target{Kind: KindPod, Namespace: "prod", Name: "web-0"})
+	second, err := r.Resolve(ctx, Target{Kind: resource.Pod, Namespace: "prod", Name: "web-0"})
 	if err != nil {
 		t.Fatalf("Resolve (gen2): %v", err)
 	}
@@ -384,7 +385,7 @@ func TestResolve_WildcardPodsSortedAndFiltered(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := r.Resolve(context.Background(), Target{Kind: KindPod, Namespace: "prod", ObjectSelector: selector})
+	got, err := r.Resolve(context.Background(), Target{Kind: resource.Pod, Namespace: "prod", ObjectSelector: selector})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -408,7 +409,7 @@ func TestResolve_WildcardCronJobOmitsNotFoundInstead(t *testing.T) {
 	client := newFakeClient(withJobs, withoutJobs, activeJob, activePod)
 	r := New(client, WithClock(clocktesting.NewFakePassiveClock(now)))
 
-	got, err := r.Resolve(context.Background(), Target{Kind: KindCronJob, Namespace: "prod", ObjectSelector: labels.Everything()})
+	got, err := r.Resolve(context.Background(), Target{Kind: resource.CronJob, Namespace: "prod", ObjectSelector: labels.Everything()})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -424,7 +425,7 @@ func TestResolve_WildcardEmptyIsEmptyNotError(t *testing.T) {
 	client := newFakeClient()
 	r := New(client)
 
-	got, err := r.Resolve(context.Background(), Target{Kind: KindPod, Namespace: "prod", ObjectSelector: labels.Everything()})
+	got, err := r.Resolve(context.Background(), Target{Kind: resource.Pod, Namespace: "prod", ObjectSelector: labels.Everything()})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -442,7 +443,7 @@ func TestResolve_ForbiddenMapsToForbiddenError(t *testing.T) {
 	})
 	r := New(client)
 
-	_, err := r.Resolve(context.Background(), Target{Kind: KindPod, Namespace: "prod", Name: "web-0"})
+	_, err := r.Resolve(context.Background(), Target{Kind: resource.Pod, Namespace: "prod", Name: "web-0"})
 
 	if _, ok := errors.AsType[*ForbiddenError](err); !ok {
 		t.Fatalf("err = %v, want *ForbiddenError", err)
@@ -492,7 +493,7 @@ func TestListObjects_FollowsContinueTokens(t *testing.T) {
 
 	r := New(client, WithPageSize(2))
 
-	objs, err := r.listObjects(context.Background(), kindSpecs[KindPod], KindPod, "prod", labels.Everything())
+	objs, err := r.listObjects(context.Background(), resource.Pod, "prod", labels.Everything())
 	if err != nil {
 		t.Fatalf("listObjects: %v", err)
 	}
@@ -567,7 +568,7 @@ func equalNames(got, want []string) bool {
 			return false
 		}
 	}
-	// PodNames must also be sorted for determinism.
+	// Members must also be sorted for determinism.
 	for i := 1; i < len(got); i++ {
 		if got[i-1] > got[i] {
 			return false

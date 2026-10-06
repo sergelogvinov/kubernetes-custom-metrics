@@ -24,8 +24,8 @@ import (
 
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/catalog"
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/prometheus"
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/server/healthz"
 	"k8s.io/client-go/dynamic"
 	"sigs.k8s.io/custom-metrics-apiserver/pkg/apiserver"
@@ -54,7 +54,7 @@ func addReadyzChecks(config *apiserver.Config, cat *catalog.Catalog, dynamicClie
 			ctx, cancel := context.WithTimeout(r.Context(), readinessCheckTimeout)
 			defer cancel()
 
-			nodes := dynamicClient.Resource(schema.GroupVersionResource{Version: "v1", Resource: "nodes"})
+			nodes := dynamicClient.Resource(resource.Node.GVR())
 			if _, err := nodes.List(ctx, metav1.ListOptions{Limit: 1}); err != nil {
 				return fmt.Errorf("service account cannot list nodes: %w", err)
 			}

@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/catalog"
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/resource"
 	clocktesting "k8s.io/utils/clock/testing"
 )
 
@@ -194,11 +195,11 @@ func newEvalClient(t *testing.T, url string, cfg ClientConfig) *Client {
 var (
 	podCPU = catalog.Base{
 		Name: "cpu", Series: "pod_cpu_usage_cores", Unit: catalog.UnitCores,
-		Scope: catalog.ScopePod, Aggregation: catalog.AggregationSumThenStat,
+		Scope: resource.ScopePod, Aggregation: catalog.AggregationSumThenStat,
 	}
 	nodeCPU = catalog.Base{
 		Name: "node_cpu", Series: "node_cpu_usage_cores", Unit: catalog.UnitCores,
-		Scope: catalog.ScopeNode, Aggregation: catalog.AggregationSumThenStat,
+		Scope: resource.ScopeNode, Aggregation: catalog.AggregationSumThenStat,
 	}
 )
 
@@ -219,7 +220,7 @@ func rawComputation(targets ...Target) Computation {
 	return comp
 }
 
-var web = Target{Name: "web", Pods: []string{"web-0", "web-1"}}
+var web = Target{Members: []string{"web-0", "web-1"}}
 
 func TestEvaluate_Success(t *testing.T) {
 	backend := newFakeBackend(t, healthy("1.5"))
@@ -278,9 +279,9 @@ func TestEvaluate_ManyTargetsShareFourQueries(t *testing.T) {
 	})
 
 	comp := podComputation(
-		Target{Name: "a", Pods: []string{"a-0"}},
-		Target{Name: "b", Pods: []string{"b-0"}},
-		Target{Name: "c", Pods: []string{"c-0", "c-1"}},
+		Target{Members: []string{"a-0"}},
+		Target{Members: []string{"b-0"}},
+		Target{Members: []string{"c-0", "c-1"}},
 	)
 
 	eval, err := newEvalClient(t, backend.server.URL, ClientConfig{}).Evaluate(context.Background(), comp)
@@ -303,7 +304,7 @@ func TestEvaluate_TargetsWithoutIdentitiesAreAbsentAndNeverQueried(t *testing.T)
 	// Only the target with identities reaches the batch, at position 0.
 	backend := newFakeBackend(t, healthy("5"))
 
-	comp := podComputation(Target{Name: "idle"}, Target{Name: "busy", Pods: []string{"busy-0"}})
+	comp := podComputation(Target{}, Target{Members: []string{"busy-0"}})
 
 	eval, err := newEvalClient(t, backend.server.URL, ClientConfig{}).Evaluate(context.Background(), comp)
 	if err != nil {
@@ -319,7 +320,7 @@ func TestEvaluate_TargetsWithoutIdentitiesAreAbsentAndNeverQueried(t *testing.T)
 	}
 
 	// With no identities at all, nothing reaches the backend.
-	idle, err := newEvalClient(t, "http://127.0.0.1:1", ClientConfig{}).Evaluate(context.Background(), podComputation(Target{Name: "idle"}))
+	idle, err := newEvalClient(t, "http://127.0.0.1:1", ClientConfig{}).Evaluate(context.Background(), podComputation(Target{}))
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
@@ -331,7 +332,7 @@ func TestEvaluate_TargetsWithoutIdentitiesAreAbsentAndNeverQueried(t *testing.T)
 func TestEvaluate_NodeScopeMatchesNodeName(t *testing.T) {
 	backend := newFakeBackend(t, healthy("4"))
 
-	comp := Computation{Base: nodeCPU, Stat: catalog.StatMax, Window: time.Hour, Targets: []Target{{Name: "worker-1"}}}
+	comp := Computation{Base: nodeCPU, Stat: catalog.StatMax, Window: time.Hour, Targets: []Target{{Members: []string{"worker-1"}}}}
 
 	eval, err := newEvalClient(t, backend.server.URL, ClientConfig{}).Evaluate(context.Background(), comp)
 	if err != nil {
@@ -350,7 +351,7 @@ func TestEvaluate_NodeScopeMatchesNodeName(t *testing.T) {
 func TestEvaluate_RawIssuesOnlyOneQuery(t *testing.T) {
 	backend := newFakeBackend(t, map[queryKind]mockResult{kindUsage: {values: []string{"1.5", ""}}})
 
-	comp := rawComputation(web, Target{Name: "api", Pods: []string{"api-0"}})
+	comp := rawComputation(web, Target{Members: []string{"api-0"}})
 
 	eval, err := newEvalClient(t, backend.server.URL, ClientConfig{}).Evaluate(context.Background(), comp)
 	if err != nil {
@@ -464,7 +465,7 @@ func TestEvaluate_QueryTooLarge(t *testing.T) {
 		pods = append(pods, "pod-with-a-long-generated-name-"+strconv.Itoa(i))
 	}
 
-	_, err := newEvalClient(t, "http://127.0.0.1:1", ClientConfig{}).Evaluate(context.Background(), podComputation(Target{Name: "big", Pods: pods}))
+	_, err := newEvalClient(t, "http://127.0.0.1:1", ClientConfig{}).Evaluate(context.Background(), podComputation(Target{Members: pods}))
 	if !errors.Is(err, ErrQueryTooLarge) {
 		t.Errorf("err = %v, want ErrQueryTooLarge", err)
 	}

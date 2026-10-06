@@ -38,16 +38,13 @@ type Computation struct {
 	Targets   []Target
 }
 
-// Target is one resolved object to evaluate. Which field identifies it in
-// the backend depends on the base's scope, so callers fill both and never
-// choose.
+// Target is one resolved object to evaluate.
 type Target struct {
-	// Name is the object's own name: the identity a node-scoped base
-	// matches on.
-	Name string
-	// Pods are the object's retained, deduplicated Pod names: the identity
-	// set a pod-scoped base aggregates over.
-	Pods []string
+	// Members are the identities whose series make up the object's value:
+	// the Node's own name for a node-scoped base, the retained,
+	// deduplicated Pod names for a pod-scoped one. Empty means the object
+	// has no eligible members and its sample is absent.
+	Members []string
 }
 
 // Sample is one target's outcome.
@@ -97,11 +94,7 @@ func (c *Client) Evaluate(ctx context.Context, comp Computation) (Evaluation, er
 	index := make([]int, 0, len(comp.Targets))
 
 	for i, target := range comp.Targets {
-		names := target.Pods
-		if comp.Base.Scope == catalog.ScopeNode {
-			names = []string{target.Name}
-		}
-		if len(names) == 0 || names[0] == "" {
+		if len(target.Members) == 0 || target.Members[0] == "" {
 			// No eligible retained members: absent, and never rendered
 			// as an unrestricted query (metric-gateway.md §3.3).
 			continue
@@ -116,7 +109,7 @@ func (c *Client) Evaluate(ctx context.Context, comp Computation) (Evaluation, er
 			Stat:        comp.Stat,
 			Window:      comp.Window,
 			Namespace:   comp.Namespace,
-			Names:       names,
+			Members:     target.Members,
 		})
 		index = append(index, i)
 	}

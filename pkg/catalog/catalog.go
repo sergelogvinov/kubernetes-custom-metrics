@@ -29,7 +29,7 @@ import (
 	"sort"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/resource"
 	"sigs.k8s.io/custom-metrics-apiserver/pkg/provider"
 	"sigs.k8s.io/yaml"
 )
@@ -92,7 +92,7 @@ type Base struct {
 	Name        string
 	Series      string
 	Unit        Unit
-	Scope       Scope
+	Scope       resource.Scope
 	Aggregation Aggregation
 }
 
@@ -121,14 +121,14 @@ type rawBase struct {
 // only to equivalent normalized inputs" (metric-gateway.md §8).
 type fixedBaseSpec struct {
 	Unit  Unit
-	Scope Scope
+	Scope resource.Scope
 }
 
 var fixedBaseSpecs = map[string]fixedBaseSpec{
-	"cpu":         {Unit: UnitCores, Scope: ScopePod},
-	"memory":      {Unit: UnitBytes, Scope: ScopePod},
-	"node_cpu":    {Unit: UnitCores, Scope: ScopeNode},
-	"node_memory": {Unit: UnitBytes, Scope: ScopeNode},
+	"cpu":         {Unit: UnitCores, Scope: resource.ScopePod},
+	"memory":      {Unit: UnitBytes, Scope: resource.ScopePod},
+	"node_cpu":    {Unit: UnitCores, Scope: resource.ScopeNode},
+	"node_memory": {Unit: UnitBytes, Scope: resource.ScopeNode},
 }
 
 // seriesNamePattern matches a bare Prometheus metric identifier. The
@@ -200,7 +200,7 @@ func validateBase(name string, rb rawBase) (Base, error) {
 		return Base{}, fmt.Errorf("catalog: base %q: unit must be %q, got %q", name, spec.Unit, rb.Unit)
 	}
 
-	scope := Scope(rb.Scope)
+	scope := resource.Scope(rb.Scope)
 	if scope != spec.Scope {
 		return Base{}, fmt.Errorf("catalog: base %q: scope must be %q, got %q", name, spec.Scope, rb.Scope)
 	}
@@ -213,34 +213,6 @@ func validateBase(name string, rb rawBase) (Base, error) {
 	}
 
 	return Base{Name: name, Series: rb.Series, Unit: unit, Scope: scope, Aggregation: aggregation}, nil
-}
-
-// resourceScope is one Kubernetes resource a base's scope applies to, per
-// the API paths in metric-gateway.md §3.5.
-type resourceScope struct {
-	groupResource schema.GroupResource
-	namespaced    bool
-}
-
-var podScopedResources = []resourceScope{
-	{groupResource: schema.GroupResource{Resource: "pods"}, namespaced: true},
-	{groupResource: schema.GroupResource{Group: "apps", Resource: "deployments"}, namespaced: true},
-	{groupResource: schema.GroupResource{Group: "apps", Resource: "statefulsets"}, namespaced: true},
-	{groupResource: schema.GroupResource{Group: "apps", Resource: "daemonsets"}, namespaced: true},
-	{groupResource: schema.GroupResource{Group: "batch", Resource: "jobs"}, namespaced: true},
-	{groupResource: schema.GroupResource{Group: "batch", Resource: "cronjobs"}, namespaced: true},
-}
-
-var nodeScopedResources = []resourceScope{
-	{groupResource: schema.GroupResource{Resource: "nodes"}, namespaced: false},
-}
-
-func resourcesFor(scope Scope) []resourceScope {
-	if scope == ScopeNode {
-		return nodeScopedResources
-	}
-
-	return podScopedResources
 }
 
 // discoveryEntries expands bases × stats × windows into the
@@ -256,12 +228,15 @@ func discoveryEntries(bases map[string]Base, stats []Stat, windows []Window) []p
 	var entries []provider.CustomMetricInfo
 	for _, name := range names {
 		base := bases[name]
-		for _, res := range resourcesFor(base.Scope) {
+		for _, kind := range resource.All() {
+			if kind.Scope() != base.Scope {
+				continue
+			}
 			for _, stat := range stats {
 				for _, window := range windows {
 					entries = append(entries, provider.CustomMetricInfo{
-						GroupResource: res.groupResource,
-						Namespaced:    res.namespaced,
+						GroupResource: kind.GroupResource(),
+						Namespaced:    kind.Namespaced(),
 						Metric:        BuildMetricName(name, stat, window),
 					})
 				}

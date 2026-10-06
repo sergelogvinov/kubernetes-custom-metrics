@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/resource"
 	"github.com/spf13/cobra"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -39,14 +40,41 @@ type resourceDescriptor struct {
 	MemoryBase string
 }
 
-var resourceDescriptors = []resourceDescriptor{
-	{Name: "pods", Aliases: []string{"po"}, Namespaced: true, GroupKind: schema.GroupKind{Kind: "Pod"}, CPUBase: "cpu", MemoryBase: "memory"},
-	{Name: "nodes", Namespaced: false, GroupKind: schema.GroupKind{Kind: "Node"}, CPUBase: "node_cpu", MemoryBase: "node_memory"},
-	{Name: "deployments", Aliases: []string{"deploy"}, Namespaced: true, GroupKind: schema.GroupKind{Group: "apps", Kind: "Deployment"}, CPUBase: "cpu", MemoryBase: "memory"},
-	{Name: "statefulsets", Aliases: []string{"sts"}, Namespaced: true, GroupKind: schema.GroupKind{Group: "apps", Kind: "StatefulSet"}, CPUBase: "cpu", MemoryBase: "memory"},
-	{Name: "daemonsets", Aliases: []string{"ds"}, Namespaced: true, GroupKind: schema.GroupKind{Group: "apps", Kind: "DaemonSet"}, CPUBase: "cpu", MemoryBase: "memory"},
-	{Name: "jobs", Aliases: []string{"job"}, Namespaced: true, GroupKind: schema.GroupKind{Group: "batch", Kind: "Job"}, CPUBase: "cpu", MemoryBase: "memory"},
-	{Name: "cronjobs", Aliases: []string{"cj"}, Namespaced: true, GroupKind: schema.GroupKind{Group: "batch", Kind: "CronJob"}, CPUBase: "cpu", MemoryBase: "memory"},
+// resourceAliases are the kubectl-style short names each subcommand
+// accepts. Name, GroupKind and namespacing come from pkg/resource; the
+// cpu/memory base names follow the kind's scope.
+var resourceAliases = map[resource.Kind][]string{
+	resource.Pod:         {"po"},
+	resource.Deployment:  {"deploy"},
+	resource.StatefulSet: {"sts"},
+	resource.DaemonSet:   {"ds"},
+	resource.Job:         {"job"},
+	resource.CronJob:     {"cj"},
+}
+
+var resourceDescriptors = newResourceDescriptors()
+
+func newResourceDescriptors() []resourceDescriptor {
+	kinds := resource.All()
+	descs := make([]resourceDescriptor, 0, len(kinds))
+
+	for _, kind := range kinds {
+		cpuBase, memoryBase := "cpu", "memory"
+		if kind.Scope() == resource.ScopeNode {
+			cpuBase, memoryBase = "node_cpu", "node_memory"
+		}
+
+		descs = append(descs, resourceDescriptor{
+			Name:       kind.GVR().Resource,
+			Aliases:    resourceAliases[kind],
+			Namespaced: kind.Namespaced(),
+			GroupKind:  kind.GroupKind(),
+			CPUBase:    cpuBase,
+			MemoryBase: memoryBase,
+		})
+	}
+
+	return descs
 }
 
 // newResourceCommands builds the seven resource subcommands from

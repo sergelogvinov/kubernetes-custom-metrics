@@ -69,6 +69,7 @@ flowchart TD
     cache[pkg/cache<br/>response cache, singleflight, limits]
     prom[pkg/prometheus<br/>evaluate statistics]
     tel[internal/telemetry<br/>server's own metrics]
+    res[pkg/resource<br/>the seven resource kinds]
 
     main --> provider
     main --> tel
@@ -78,14 +79,19 @@ flowchart TD
     provider --> prom
     provider --> tel
     prom --> catalog
+    provider --> res
+    catalog --> res
+    resolver --> res
+    prom --> res
 ```
 
 | Package | Responsibility |
 | :--- | :--- |
 | `cmd/custom-metrics` | Reads flags and environment variables, loads the catalog, builds all parts, and starts the API server. It uses the upstream `custom-metrics-apiserver` library for the API server itself (TLS, authentication, authorization, discovery). |
 | `internal/gateway` | The heart of the request flow. `Provider` connects to the upstream library. `Service` runs the steps of one request. It also turns every internal error into the right HTTP status. |
+| `pkg/resource` | The one table of the seven resource kinds: each kind's API group, version and resource name, whether it is namespaced, and its scope (measured per Pod or per Node). Every other package, and `kubectl-ctop`, reads kinds from here. |
 | `pkg/catalog` | Knows the four bases, their Prometheus series, units and rules. It parses metric names and builds the discovery list. |
-| `internal/resolver` | Talks to Kubernetes. It turns "Deployment `web`" into the real object and the names of its Pods. |
+| `internal/resolver` | Talks to Kubernetes. It turns "Deployment `web`" into the real object and its members: the names of its Pods, or a Node's own name. |
 | `pkg/prometheus` | Talks to Prometheus. It takes a whole computation (base, stat, window, and the targets) and returns one value for each target. |
 | `pkg/cache` | A memory cache for finished answers, a "singleflight" group that joins identical requests, and simple limits on how much work can run at once. |
 | `internal/telemetry` | The server's own Prometheus metrics, such as cache hits and errors by reason. |
@@ -108,7 +114,7 @@ sequenceDiagram
     P->>S: Get(request)
     S->>S: parse name, check cache
     S->>R: Resolve(Deployment web)
-    R-->>S: object + Pod names
+    R-->>S: object + members
     S->>Q: Evaluate(base, stat, window, targets)
     Q-->>S: one value per target + time
     S->>S: store in cache

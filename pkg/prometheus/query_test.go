@@ -24,19 +24,20 @@ import (
 	"time"
 
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/catalog"
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/resource"
 )
 
 func baseRequest() request {
 	return request{
 		Cluster:     "example",
 		Series:      "pod_cpu_usage_cores",
-		Scope:       catalog.ScopePod,
+		Scope:       resource.ScopePod,
 		Quantity:    quantityCPU,
 		Aggregation: catalog.AggregationSumThenStat,
 		Stat:        catalog.StatAvg,
 		Window:      time.Hour,
 		Namespace:   "prod",
-		Names:       []string{"web-0", "web-1"},
+		Members:     []string{"web-0", "web-1"},
 	}
 }
 
@@ -71,12 +72,12 @@ func TestRenderUsage_StatThenSumZeroFillsConfirmedInactivePoints(t *testing.T) {
 
 func TestRenderUsage_NodeScopeOmitsNamespaceAndUsesNodeActive(t *testing.T) {
 	req := baseRequest()
-	req.Scope = catalog.ScopeNode
+	req.Scope = resource.ScopeNode
 	req.Quantity = quantityCPU
 	req.Series = "node_cpu_usage_cores"
 	req.Namespace = ""
 	req.Aggregation = catalog.AggregationStatThenSum
-	req.Names = []string{"worker-1"}
+	req.Members = []string{"worker-1"}
 
 	got, err := renderUsage(req)
 	if err != nil {
@@ -118,12 +119,12 @@ func TestRenderUsage_EmptyClusterOmitsClusterMatcher(t *testing.T) {
 func TestRenderUsage_EveryStatCombination(t *testing.T) {
 	stats := []catalog.Stat{catalog.StatAvg, catalog.StatMax, catalog.StatMin, catalog.StatP50, catalog.StatP90, catalog.StatP95, catalog.StatP99, catalog.StatStddev}
 	scopes := []struct {
-		scope     catalog.Scope
+		scope     resource.Scope
 		namespace string
 		series    string
 	}{
-		{catalog.ScopePod, "prod", "pod_cpu_usage_cores"},
-		{catalog.ScopeNode, "", "node_cpu_usage_cores"},
+		{resource.ScopePod, "prod", "pod_cpu_usage_cores"},
+		{resource.ScopeNode, "", "node_cpu_usage_cores"},
 	}
 	quantities := []quantity{quantityCPU, quantityMemory}
 	aggregations := []catalog.Aggregation{catalog.AggregationSumThenStat, catalog.AggregationStatThenSum}
@@ -169,7 +170,7 @@ func TestRenderUsage_EveryStatCombination(t *testing.T) {
 
 func TestRenderUsage_RejectsEmptySelection(t *testing.T) {
 	req := baseRequest()
-	req.Names = nil
+	req.Members = nil
 
 	if _, err := renderUsage(req); err != ErrEmptySelection {
 		t.Errorf("renderUsage err = %v, want ErrEmptySelection", err)
@@ -240,9 +241,9 @@ func TestRenderRawUsage_EmptyClusterOmitsClusterMatcher(t *testing.T) {
 func nodeRawRequest() request {
 	req := baseRequest()
 	req.Aggregation = catalog.AggregationRaw
-	req.Scope = catalog.ScopeNode
+	req.Scope = resource.ScopeNode
 	req.Namespace = ""
-	req.Names = []string{"worker-1"}
+	req.Members = []string{"worker-1"}
 
 	return req
 }
@@ -301,7 +302,7 @@ func TestRenderRawUsage_NodeEmptyClusterOmitsClusterMatcher(t *testing.T) {
 func TestRenderRawUsage_RejectsEmptySelection(t *testing.T) {
 	req := baseRequest()
 	req.Aggregation = catalog.AggregationRaw
-	req.Names = nil
+	req.Members = nil
 
 	if _, err := renderRawUsage(req); err != ErrEmptySelection {
 		t.Errorf("renderRawUsage err = %v, want ErrEmptySelection", err)
@@ -310,14 +311,14 @@ func TestRenderRawUsage_RejectsEmptySelection(t *testing.T) {
 
 func TestCompleteSeriesName_FixedMapping(t *testing.T) {
 	cases := []struct {
-		scope    catalog.Scope
+		scope    resource.Scope
 		quantity quantity
 		want     string
 	}{
-		{catalog.ScopePod, quantityCPU, "pod_cpu_complete"},
-		{catalog.ScopePod, quantityMemory, "pod_memory_complete"},
-		{catalog.ScopeNode, quantityCPU, "node_complete"},
-		{catalog.ScopeNode, quantityMemory, "node_complete"},
+		{resource.ScopePod, quantityCPU, "pod_cpu_complete"},
+		{resource.ScopePod, quantityMemory, "pod_memory_complete"},
+		{resource.ScopeNode, quantityCPU, "node_complete"},
+		{resource.ScopeNode, quantityMemory, "node_complete"},
 	}
 	for _, tc := range cases {
 		if got := completeSeriesName(tc.scope, tc.quantity); got != tc.want {
@@ -351,7 +352,7 @@ func TestRenderFreshness_UsesTimestampFunction(t *testing.T) {
 
 func TestNamePattern_EscapesRegexMetacharacters(t *testing.T) {
 	req := baseRequest()
-	req.Names = []string{"web.with|special(chars)"}
+	req.Members = []string{"web.with|special(chars)"}
 
 	got, err := renderUsage(req)
 	if err != nil {

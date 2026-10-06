@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/resource"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
@@ -30,7 +31,7 @@ import (
 // in metric-gateway.md §3.4: active Jobs, else recent Jobs within the
 // fallback window, else the specific NotFound shape from §3.4.
 func (r *Resolver) resolveNamedCronJob(ctx context.Context, namespace, name string) (Resolution, error) {
-	cronJob, err := r.getObject(ctx, kindSpecs[KindCronJob], KindCronJob, namespace, name)
+	cronJob, err := r.getObject(ctx, resource.CronJob, namespace, name)
 	if err != nil {
 		return Resolution{}, err
 	}
@@ -40,7 +41,7 @@ func (r *Resolver) resolveNamedCronJob(ctx context.Context, namespace, name stri
 		return Resolution{}, err
 	}
 
-	return Resolution{Object: objectRefFrom(cronJob), PodNames: podNames, CronJobFallback: usedFallback}, nil
+	return Resolution{Object: objectRefFrom(cronJob), Members: podNames, CronJobFallback: usedFallback}, nil
 }
 
 // resolveCronJobPodNames implements the CronJob fallback logic: active Jobs
@@ -52,7 +53,7 @@ func (r *Resolver) resolveNamedCronJob(ctx context.Context, namespace, name stri
 func (r *Resolver) resolveCronJobPodNames(ctx context.Context, cronJob *unstructured.Unstructured) (names []string, usedFallback bool, err error) {
 	namespace, name, cronJobUID := cronJob.GetNamespace(), cronJob.GetName(), cronJob.GetUID()
 
-	jobs, err := r.listObjects(ctx, kindSpecs[KindJob], KindJob, namespace, labels.Everything())
+	jobs, err := r.listObjects(ctx, resource.Job, namespace, labels.Everything())
 	if err != nil {
 		return nil, false, err
 	}
@@ -67,7 +68,7 @@ func (r *Resolver) resolveCronJobPodNames(ctx context.Context, cronJob *unstruct
 
 	if len(selected) == 0 {
 		return nil, false, &NotFoundError{
-			Kind:      KindCronJob,
+			Kind:      resource.CronJob,
 			Namespace: namespace,
 			Name:      name,
 			Message: fmt.Sprintf("no active or recent (%s) Jobs for CronJob %s",

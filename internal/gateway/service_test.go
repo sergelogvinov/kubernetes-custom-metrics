@@ -28,6 +28,7 @@ import (
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/cache"
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/catalog"
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/prometheus"
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/resource"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -163,8 +164,8 @@ func podRequest(name string) Request {
 
 func podResolution(name, uid string) resolver.Resolution {
 	return resolver.Resolution{
-		Object:   resolver.ObjectRef{Namespace: "prod", Name: name, UID: types.UID(uid)},
-		PodNames: []string{name},
+		Object:  resolver.ObjectRef{Namespace: "prod", Name: name, UID: types.UID(uid)},
+		Members: []string{name},
 	}
 }
 
@@ -209,7 +210,7 @@ func TestService_Get_NamedHit(t *testing.T) {
 	}
 
 	// The computation must carry the catalog base, the parsed stat/window
-	// and the resolved pod names.
+	// and the resolved members.
 	comp := q.lastComp
 	if comp.Base.Series != "pod_cpu_usage_cores" || comp.Base.Aggregation != catalog.AggregationSumThenStat {
 		t.Errorf("Base = %+v", comp.Base)
@@ -217,7 +218,7 @@ func TestService_Get_NamedHit(t *testing.T) {
 	if comp.Stat != catalog.StatAvg || comp.Window != 5*time.Minute || comp.Namespace != "prod" {
 		t.Errorf("Stat/Window/Namespace = %s/%s/%s", comp.Stat, comp.Window, comp.Namespace)
 	}
-	if len(comp.Targets) != 1 || comp.Targets[0].Name != "web-0" || len(comp.Targets[0].Pods) != 1 || comp.Targets[0].Pods[0] != "web-0" {
+	if len(comp.Targets) != 1 || len(comp.Targets[0].Members) != 1 || comp.Targets[0].Members[0] != "web-0" {
 		t.Errorf("Targets = %+v", comp.Targets)
 	}
 }
@@ -249,7 +250,7 @@ func TestService_Get_ServesNamesDiscoveryDoesNotAdvertise(t *testing.T) {
 
 func TestService_Get_NodeTargetCarriesNodeName(t *testing.T) {
 	res := &fakeResolver{resolutions: []resolver.Resolution{
-		{Object: resolver.ObjectRef{Name: "worker-1", UID: "uid-worker-1"}},
+		{Object: resolver.ObjectRef{Name: "worker-1", UID: "uid-worker-1"}, Members: []string{"worker-1"}},
 	}}
 	q := &fakeEvaluator{sample: present(2.0)}
 	svc := newTestService(t, testCatalog(t), res, q)
@@ -270,10 +271,10 @@ func TestService_Get_NodeTargetCarriesNodeName(t *testing.T) {
 	if len(result.Items) != 1 || result.Items[0].Kind != "Node" {
 		t.Fatalf("result = %+v", result)
 	}
-	if len(q.lastComp.Targets) != 1 || q.lastComp.Targets[0].Name != "worker-1" {
-		t.Errorf("Targets = %+v, want one target named worker-1", q.lastComp.Targets)
+	if len(q.lastComp.Targets) != 1 || len(q.lastComp.Targets[0].Members) != 1 || q.lastComp.Targets[0].Members[0] != "worker-1" {
+		t.Errorf("Targets = %+v, want one target with member worker-1", q.lastComp.Targets)
 	}
-	if q.lastComp.Base.Scope != catalog.ScopeNode {
+	if q.lastComp.Base.Scope != resource.ScopeNode {
 		t.Errorf("Scope = %q, want node", q.lastComp.Base.Scope)
 	}
 }
@@ -330,7 +331,7 @@ func TestService_Get_WildcardOmitsAbsentItems(t *testing.T) {
 	}}
 
 	q := &fakeEvaluator{fn: func(target prometheus.Target) prometheus.Sample {
-		if target.Name == "web-0" {
+		if target.Members[0] == "web-0" {
 			return prometheus.Sample{} // absent
 		}
 
@@ -384,20 +385,40 @@ func TestService_Get_UnknownMetric404(t *testing.T) {
 }
 
 func TestService_Get_ScopeMismatch404(t *testing.T) {
-	svc := newTestService(t, testCatalog(t), &fakeResolver{}, &fakeEvaluator{})
+	tests := []struct {
+		name   string
+		gr     schema.GroupResource
+		metric string
+	}{
+		// node_cpu is node-scoped; requesting it against a Pod is unsupported.
+		{"node base on pods", schema.GroupResource{Resource: "pods"}, "node_cpu_avg_5m"},
+		// cpu is pod-scoped; requesting it against a Node is unsupported.
+		{"pod base on nodes", schema.GroupResource{Resource: "nodes"}, "cpu_avg_5m"},
+		{"unsupported resource", schema.GroupResource{Group: "apps", Resource: "replicasets"}, "cpu_avg_5m"},
+	}
 
-	// node_cpu is node-scoped; requesting it against a Pod is unsupported.
-	req := podRequest("web-0")
-	req.Metric = "node_cpu_avg_5m"
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := &fakeResolver{}
+			svc := newTestService(t, testCatalog(t), res, &fakeEvaluator{})
 
-	_, err := svc.Get(context.Background(), req)
-	if got := statusCode(t, err); got != 404 {
-		t.Errorf("code = %d, want 404", got)
+			req := podRequest("web-0")
+			req.GroupResource = tt.gr
+			req.Metric = tt.metric
+
+			_, err := svc.Get(context.Background(), req)
+			if got := statusCode(t, err); got != 404 {
+				t.Errorf("code = %d, want 404", got)
+			}
+			if got := res.calls.Load(); got != 0 {
+				t.Errorf("resolver called %d times, want 0", got)
+			}
+		})
 	}
 }
 
 func TestService_Get_NamedObjectNotFound404(t *testing.T) {
-	res := &fakeResolver{err: &resolver.NotFoundError{Kind: resolver.KindPod, Namespace: "prod", Name: "web-0", Message: `pods "web-0" not found`}}
+	res := &fakeResolver{err: &resolver.NotFoundError{Kind: resource.Pod, Namespace: "prod", Name: "web-0", Message: `pods "web-0" not found`}}
 	svc := newTestService(t, testCatalog(t), res, &fakeEvaluator{})
 
 	_, err := svc.Get(context.Background(), podRequest("web-0"))
@@ -408,7 +429,7 @@ func TestService_Get_NamedObjectNotFound404(t *testing.T) {
 
 func TestService_Get_CronJobNotFoundPreservesExactMessage(t *testing.T) {
 	message := "no active or recent (24h) Jobs for CronJob prod/nightly-batch"
-	res := &fakeResolver{err: &resolver.NotFoundError{Kind: resolver.KindCronJob, Namespace: "prod", Name: "nightly-batch", Message: message}}
+	res := &fakeResolver{err: &resolver.NotFoundError{Kind: resource.CronJob, Namespace: "prod", Name: "nightly-batch", Message: message}}
 	svc := newTestService(t, testCatalog(t), res, &fakeEvaluator{})
 
 	req := podRequest("nightly-batch")
@@ -436,9 +457,9 @@ func TestService_Get_NoEligibleMembersNamed404(t *testing.T) {
 	}
 }
 
-func TestService_Get_ZeroPodNamesNamed404(t *testing.T) {
+func TestService_Get_ZeroMembersNamed404(t *testing.T) {
 	res := &fakeResolver{resolutions: []resolver.Resolution{
-		{Object: resolver.ObjectRef{Namespace: "prod", Name: "web", UID: "uid-deploy"}, PodNames: nil},
+		{Object: resolver.ObjectRef{Namespace: "prod", Name: "web", UID: "uid-deploy"}, Members: nil},
 	}}
 	svc := newTestService(t, testCatalog(t), res, &fakeEvaluator{})
 
@@ -452,7 +473,7 @@ func TestService_Get_ZeroPodNamesNamed404(t *testing.T) {
 }
 
 func TestService_Get_ServiceAccountForbidden503(t *testing.T) {
-	res := &fakeResolver{err: &resolver.ForbiddenError{Kind: resolver.KindPod, Namespace: "prod", Name: "web-0", Err: errors.New("RBAC denied")}}
+	res := &fakeResolver{err: &resolver.ForbiddenError{Kind: resource.Pod, Namespace: "prod", Name: "web-0", Err: errors.New("RBAC denied")}}
 	svc := newTestService(t, testCatalog(t), res, &fakeEvaluator{})
 
 	_, err := svc.Get(context.Background(), podRequest("web-0"))
@@ -495,7 +516,7 @@ func TestService_Get_DeadlineExceeded504(t *testing.T) {
 }
 
 func TestService_Get_ResolverForbidden_DoesNotQuery(t *testing.T) {
-	res := &fakeResolver{err: &resolver.ForbiddenError{Kind: resolver.KindPod, Err: errors.New("x")}}
+	res := &fakeResolver{err: &resolver.ForbiddenError{Kind: resource.Pod, Err: errors.New("x")}}
 	q := &fakeEvaluator{}
 	svc := newTestService(t, testCatalog(t), res, q)
 
