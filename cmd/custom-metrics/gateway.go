@@ -59,6 +59,7 @@ func buildGateway(ctx context.Context, opts *Options, cat *catalog.Catalog, dyna
 	res := resolver.New(dynamicClient, resolver.WithCronJobFallbackWindow(opts.CronJobFallbackWindow))
 
 	promClient, err := prometheus.NewClient(prometheus.ClientConfig{
+		Cluster:              opts.Cluster,
 		URL:                  opts.PrometheusURL,
 		Timeout:              opts.PrometheusTimeout,
 		MaxConns:             opts.PrometheusMaxConns,
@@ -71,10 +72,9 @@ func buildGateway(ctx context.Context, opts *Options, cat *catalog.Catalog, dyna
 	}
 
 	svc := gateway.NewService(gateway.Deps{
-		Catalog:  cat,
-		Cluster:  opts.Cluster,
-		Resolver: res,
-		Querier:  promClient,
+		Catalog:   cat,
+		Resolver:  res,
+		Evaluator: promClient,
 
 		Cache:        gateway.NewCache(opts.CacheSize, opts.CacheMaxBytes),
 		Flights:      cache.NewGroup[gateway.Result](ctx, opts.RequestTimeout),

@@ -256,8 +256,8 @@ type Resolver interface {
     Resolve(context.Context, Target) (Selection, error)
 }
 
-type Querier interface {
-    Query(context.Context, Query) ([]Sample, error)
+type Evaluator interface {
+    Evaluate(context.Context, prometheus.Computation) (prometheus.Evaluation, error)
 }
 
 type ResponseCache interface {
@@ -304,7 +304,7 @@ The resolver implements retained-membership semantics, not historical ownership 
 
 `pkg/prometheus/query.go` owns all PromQL rendering. Inputs are structured values, not pre-concatenated fragments. Label names are validated and label values are escaped before rendering.
 
-The package should expose a narrow `Querier` interface and keep HTTP details private. Configure one reusable transport with verified TLS, optional token-file credentials, connection limits and timeout; propagate shared-computation contexts so shutdown/deadlines cancel backend requests. Reject credential-bearing redirects and URLs. Enforce global/per-computation concurrency, query length, decompressed body size and total deadlines from the specification; connection pooling alone does not bound workload.
+The package exposes one narrow interface, `Client.Evaluate(ctx, Computation) (Evaluation, error)`: the caller passes the catalog base, statistic, window and each resolved target's identities, and gets one value or confirmed absence per target plus the shared evaluation time. Capturing the aligned evaluation time, choosing identities by scope, raw versus normalized input, coverage/freshness validation and batching every target of a computation into at most four backend queries (one `label_replace(...) or ...` union per query kind) all stay inside the package. It keeps HTTP details private. Configure one reusable transport with verified TLS, optional token-file credentials, connection limits and timeout; propagate shared-computation contexts so shutdown/deadlines cancel backend requests. Reject credential-bearing redirects and URLs. Enforce global/per-computation concurrency, query length, decompressed body size and total deadlines from the specification; connection pooling alone does not bound workload.
 
 Separate tests should use golden query strings for every combination of:
 

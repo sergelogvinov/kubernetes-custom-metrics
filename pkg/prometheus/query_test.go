@@ -22,20 +22,21 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/catalog"
 )
 
-func baseRequest() Request {
-	return Request{
+func baseRequest() request {
+	return request{
 		Cluster:     "example",
 		Series:      "pod_cpu_usage_cores",
-		Scope:       ScopePod,
-		Quantity:    QuantityCPU,
-		Aggregation: AggregationSumThenStat,
-		Stat:        StatAvg,
+		Scope:       catalog.ScopePod,
+		Quantity:    quantityCPU,
+		Aggregation: catalog.AggregationSumThenStat,
+		Stat:        catalog.StatAvg,
 		Window:      time.Hour,
 		Namespace:   "prod",
 		Names:       []string{"web-0", "web-1"},
-		QueryTime:   time.Unix(1_700_000_000, 0).UTC(),
 	}
 }
 
@@ -55,7 +56,7 @@ func TestRenderUsage_MatchesIllustrativeExample(t *testing.T) {
 
 func TestRenderUsage_StatThenSumZeroFillsConfirmedInactivePoints(t *testing.T) {
 	req := baseRequest()
-	req.Aggregation = AggregationStatThenSum
+	req.Aggregation = catalog.AggregationStatThenSum
 
 	got, err := renderUsage(req)
 	if err != nil {
@@ -70,11 +71,11 @@ func TestRenderUsage_StatThenSumZeroFillsConfirmedInactivePoints(t *testing.T) {
 
 func TestRenderUsage_NodeScopeOmitsNamespaceAndUsesNodeActive(t *testing.T) {
 	req := baseRequest()
-	req.Scope = ScopeNode
-	req.Quantity = QuantityCPU
+	req.Scope = catalog.ScopeNode
+	req.Quantity = quantityCPU
 	req.Series = "node_cpu_usage_cores"
 	req.Namespace = ""
-	req.Aggregation = AggregationStatThenSum
+	req.Aggregation = catalog.AggregationStatThenSum
 	req.Names = []string{"worker-1"}
 
 	got, err := renderUsage(req)
@@ -94,7 +95,7 @@ func TestRenderUsage_NodeScopeOmitsNamespaceAndUsesNodeActive(t *testing.T) {
 }
 
 // TestRenderUsage_EmptyClusterOmitsClusterMatcher proves an unset
-// Request.Cluster (no --cluster configured) renders without a cluster
+// request.Cluster (no --cluster configured) renders without a cluster
 // label matcher at all, rather than matching an empty cluster label value.
 func TestRenderUsage_EmptyClusterOmitsClusterMatcher(t *testing.T) {
 	req := baseRequest()
@@ -115,17 +116,17 @@ func TestRenderUsage_EmptyClusterOmitsClusterMatcher(t *testing.T) {
 // matrix: normalized CPU vs memory, pod vs node scope, both aggregation
 // orders, and every statistic.
 func TestRenderUsage_EveryStatCombination(t *testing.T) {
-	stats := []Stat{StatAvg, StatMax, StatMin, StatP50, StatP90, StatP95, StatP99, StatStddev}
+	stats := []catalog.Stat{catalog.StatAvg, catalog.StatMax, catalog.StatMin, catalog.StatP50, catalog.StatP90, catalog.StatP95, catalog.StatP99, catalog.StatStddev}
 	scopes := []struct {
-		scope     Scope
+		scope     catalog.Scope
 		namespace string
 		series    string
 	}{
-		{ScopePod, "prod", "pod_cpu_usage_cores"},
-		{ScopeNode, "", "node_cpu_usage_cores"},
+		{catalog.ScopePod, "prod", "pod_cpu_usage_cores"},
+		{catalog.ScopeNode, "", "node_cpu_usage_cores"},
 	}
-	quantities := []Quantity{QuantityCPU, QuantityMemory}
-	aggregations := []Aggregation{AggregationSumThenStat, AggregationStatThenSum}
+	quantities := []quantity{quantityCPU, quantityMemory}
+	aggregations := []catalog.Aggregation{catalog.AggregationSumThenStat, catalog.AggregationStatThenSum}
 
 	for _, sc := range scopes {
 		for _, quantity := range quantities {
@@ -153,10 +154,10 @@ func TestRenderUsage_EveryStatCombination(t *testing.T) {
 							t.Errorf("query %q missing quantile_over_time", got)
 						}
 
-						if agg == AggregationStatThenSum && !strings.HasPrefix(got, "sum(") {
+						if agg == catalog.AggregationStatThenSum && !strings.HasPrefix(got, "sum(") {
 							t.Errorf("stat-then-sum query %q must be wrapped in an outer sum()", got)
 						}
-						if agg == AggregationSumThenStat && strings.Contains(got, " or (") {
+						if agg == catalog.AggregationSumThenStat && strings.Contains(got, " or (") {
 							t.Errorf("sum-then-stat query %q must not zero-fill", got)
 						}
 					})
@@ -186,7 +187,7 @@ func TestRenderUsage_RejectsEmptySelection(t *testing.T) {
 
 func TestRenderRawUsage_CPUUsesRate(t *testing.T) {
 	req := baseRequest()
-	req.Aggregation = AggregationRaw
+	req.Aggregation = catalog.AggregationRaw
 
 	got, err := renderRawUsage(req)
 	if err != nil {
@@ -194,7 +195,7 @@ func TestRenderRawUsage_CPUUsesRate(t *testing.T) {
 	}
 
 	want := fmt.Sprintf(
-		`avg_over_time((sum by (pod) (max by (pod, container) (rate(container_cpu_usage_seconds_total`+
+		`avg_over_time((sum(max by (pod, container) (rate(container_cpu_usage_seconds_total`+
 			`{container!="",container!="POD",image!="",cluster="example",namespace="prod",pod=~"web-0|web-1"}[5m]))))[1h:%s])`,
 		gridStep,
 	)
@@ -205,8 +206,8 @@ func TestRenderRawUsage_CPUUsesRate(t *testing.T) {
 
 func TestRenderRawUsage_MemoryHasNoRate(t *testing.T) {
 	req := baseRequest()
-	req.Aggregation = AggregationRaw
-	req.Quantity = QuantityMemory
+	req.Aggregation = catalog.AggregationRaw
+	req.Quantity = quantityMemory
 
 	got, err := renderRawUsage(req)
 	if err != nil {
@@ -223,7 +224,7 @@ func TestRenderRawUsage_MemoryHasNoRate(t *testing.T) {
 
 func TestRenderRawUsage_EmptyClusterOmitsClusterMatcher(t *testing.T) {
 	req := baseRequest()
-	req.Aggregation = AggregationRaw
+	req.Aggregation = catalog.AggregationRaw
 	req.Cluster = ""
 
 	got, err := renderRawUsage(req)
@@ -236,10 +237,10 @@ func TestRenderRawUsage_EmptyClusterOmitsClusterMatcher(t *testing.T) {
 	}
 }
 
-func nodeRawRequest() Request {
+func nodeRawRequest() request {
 	req := baseRequest()
-	req.Aggregation = AggregationRaw
-	req.Scope = ScopeNode
+	req.Aggregation = catalog.AggregationRaw
+	req.Scope = catalog.ScopeNode
 	req.Namespace = ""
 	req.Names = []string{"worker-1"}
 
@@ -266,7 +267,7 @@ func TestRenderRawUsage_NodeCPUMatchesOnKubernetesNodeName(t *testing.T) {
 
 func TestRenderRawUsage_NodeMemoryIsTotalMinusAvailable(t *testing.T) {
 	req := nodeRawRequest()
-	req.Quantity = QuantityMemory
+	req.Quantity = quantityMemory
 
 	got, err := renderRawUsage(req)
 	if err != nil {
@@ -299,7 +300,7 @@ func TestRenderRawUsage_NodeEmptyClusterOmitsClusterMatcher(t *testing.T) {
 
 func TestRenderRawUsage_RejectsEmptySelection(t *testing.T) {
 	req := baseRequest()
-	req.Aggregation = AggregationRaw
+	req.Aggregation = catalog.AggregationRaw
 	req.Names = nil
 
 	if _, err := renderRawUsage(req); err != ErrEmptySelection {
@@ -309,14 +310,14 @@ func TestRenderRawUsage_RejectsEmptySelection(t *testing.T) {
 
 func TestCompleteSeriesName_FixedMapping(t *testing.T) {
 	cases := []struct {
-		scope    Scope
-		quantity Quantity
+		scope    catalog.Scope
+		quantity quantity
 		want     string
 	}{
-		{ScopePod, QuantityCPU, "pod_cpu_complete"},
-		{ScopePod, QuantityMemory, "pod_memory_complete"},
-		{ScopeNode, QuantityCPU, "node_complete"},
-		{ScopeNode, QuantityMemory, "node_complete"},
+		{catalog.ScopePod, quantityCPU, "pod_cpu_complete"},
+		{catalog.ScopePod, quantityMemory, "pod_memory_complete"},
+		{catalog.ScopeNode, quantityCPU, "node_complete"},
+		{catalog.ScopeNode, quantityMemory, "node_complete"},
 	}
 	for _, tc := range cases {
 		if got := completeSeriesName(tc.scope, tc.quantity); got != tc.want {
@@ -388,13 +389,5 @@ func TestCheckQuerySize(t *testing.T) {
 	}
 	if err := checkQuerySize(strings.Repeat("a", maxRenderedQueryBytes+1)); !errors.Is(err, ErrQueryTooLarge) {
 		t.Errorf("checkQuerySize(over limit) = %v, want ErrQueryTooLarge", err)
-	}
-}
-
-func TestAlignToGrid(t *testing.T) {
-	in := time.Date(2026, 1, 1, 12, 0, 7, 500_000_000, time.UTC)
-	want := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	if got := AlignToGrid(in); !got.Equal(want) {
-		t.Errorf("AlignToGrid(%s) = %s, want %s", in, got, want)
 	}
 }

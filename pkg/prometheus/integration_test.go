@@ -29,6 +29,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/catalog"
+	clocktesting "k8s.io/utils/clock/testing"
 )
 
 // requireBinary skips the test when name is not on PATH, so environments
@@ -43,7 +46,7 @@ func requireBinary(t *testing.T, name string) {
 	}
 }
 
-// TestClient_Query_RealPrometheus_AggregationOrderDistinction is the
+// TestEvaluate_RealPrometheus covers the
 // plan.md T4 Done-criterion "numeric fixtures against a real Prometheus
 // instance validate at least one aggregation-order distinction end-to-end."
 //
@@ -51,7 +54,7 @@ func requireBinary(t *testing.T, name string) {
 // samples directly into TSDB blocks (via `promtool tsdb
 // create-blocks-from openmetrics`) instead of waiting on real-time
 // scraping, then runs a real `prometheus` server against those blocks and
-// issues Client.Query's actual rendered PromQL through its real query
+// issues Client.Evaluate's actual rendered PromQL through its real query
 // engine — proving the rendered queries execute correctly, not just that
 // they parse.
 //
@@ -61,8 +64,10 @@ func requireBinary(t *testing.T, name string) {
 // commutes with sum and would show no distinction here), sum-then-stat
 // (max of the combined per-step sum, which is 1.1 at every step since
 // exactly one pod is hot at a time) and stat-then-sum (each pod's own
-// max — 1.0 apiece — summed) diverge cleanly: 1.1 vs 2.0.
-func TestClient_Query_RealPrometheus_AggregationOrderDistinction(t *testing.T) {
+// max — 1.0 apiece — summed) diverge cleanly: 1.1 vs 2.0. It also checks
+// that one batch query answers several targets against their own identity
+// sets, and that raw input sums every selected Pod's containers.
+func TestEvaluate_RealPrometheus(t *testing.T) {
 	requireBinary(t, "promtool")
 	requireBinary(t, "prometheus")
 
@@ -120,44 +125,76 @@ func TestClient_Query_RealPrometheus_AggregationOrderDistinction(t *testing.T) {
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 	waitForReady(t, baseURL, &stderr)
 
-	client, err := NewClient(ClientConfig{URL: baseURL, Timeout: 5 * time.Second})
+	client, err := NewClient(ClientConfig{
+		URL:     baseURL,
+		Cluster: "test",
+		Timeout: 5 * time.Second,
+		Clock:   clocktesting.NewFakePassiveClock(steps[len(steps)-1].Add(30 * time.Second)),
+	})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
 
-	req := Request{
-		Cluster:   "test",
-		Series:    "pod_cpu_usage_cores",
-		Scope:     ScopePod,
-		Quantity:  QuantityCPU,
-		Stat:      StatMax,
-		Window:    240 * time.Second,
-		Namespace: "prod",
-		Names:     []string{"web-0", "web-1"},
-		QueryTime: steps[len(steps)-1],
+	evaluate := func(base catalog.Base, stat catalog.Stat, targets ...Target) []Sample {
+		t.Helper()
+
+		eval, err := client.Evaluate(context.Background(), Computation{
+			Base:      base,
+			Stat:      stat,
+			Window:    240 * time.Second,
+			Namespace: "prod",
+			Targets:   targets,
+		})
+		if err != nil {
+			t.Fatalf("Evaluate(%s, %s): %v", base.Aggregation, stat, err)
+		}
+		if !eval.Time.Equal(steps[len(steps)-1]) {
+			t.Errorf("Time = %s, want the last grid step %s", eval.Time, steps[len(steps)-1])
+		}
+
+		return eval.Samples
 	}
 
-	req.Aggregation = AggregationSumThenStat
-	sumThenStat, ok, err := client.Query(context.Background(), req)
-	if err != nil || !ok {
-		t.Fatalf("sum-then-stat Query: ok=%v err=%v", ok, err)
+	both := Target{Name: "web", Pods: []string{"web-0", "web-1"}}
+	cpu := catalog.Base{Series: "pod_cpu_usage_cores", Unit: catalog.UnitCores, Scope: catalog.ScopePod}
+
+	cpu.Aggregation = catalog.AggregationSumThenStat
+	sumThenStat := evaluate(cpu, catalog.StatMax, both)[0]
+
+	cpu.Aggregation = catalog.AggregationStatThenSum
+	statThenSum := evaluate(cpu, catalog.StatMax, both)[0]
+
+	if !sumThenStat.Present || math.Abs(sumThenStat.Value-1.1) > 0.01 {
+		t.Errorf("sum-then-stat = %+v, want ~1.1", sumThenStat)
+	}
+	if !statThenSum.Present || math.Abs(statThenSum.Value-2.0) > 0.01 {
+		t.Errorf("stat-then-sum = %+v, want ~2.0", statThenSum)
 	}
 
-	req.Aggregation = AggregationStatThenSum
-	statThenSum, ok, err := client.Query(context.Background(), req)
-	if err != nil || !ok {
-		t.Fatalf("stat-then-sum Query: ok=%v err=%v", ok, err)
+	// One batch evaluates several targets through the real query engine,
+	// each against its own identity set.
+	cpu.Aggregation = catalog.AggregationSumThenStat
+	batch := evaluate(cpu, catalog.StatMax,
+		Target{Name: "web-0", Pods: []string{"web-0"}},
+		both,
+		Target{Name: "web-1", Pods: []string{"web-1"}},
+		Target{Name: "gone", Pods: []string{"gone-0"}},
+	)
+	for i, want := range []float64{1.0, 1.1, 1.0} {
+		if !batch[i].Present || math.Abs(batch[i].Value-want) > 0.01 {
+			t.Errorf("batch[%d] = %+v, want ~%v", i, batch[i], want)
+		}
+	}
+	if batch[3].Present {
+		t.Errorf("batch[3] = %+v, want absent (never active)", batch[3])
 	}
 
-	if math.Abs(sumThenStat.Value-1.1) > 0.01 {
-		t.Errorf("sum-then-stat value = %v, want ~1.1", sumThenStat.Value)
-	}
-	if math.Abs(statThenSum.Value-2.0) > 0.01 {
-		t.Errorf("stat-then-sum value = %v, want ~2.0", statThenSum.Value)
-	}
-	if statThenSum.Value-sumThenStat.Value < 0.5 {
-		t.Errorf("expected a clear aggregation-order distinction: sum-then-stat=%v stat-then-sum=%v",
-			sumThenStat.Value, statThenSum.Value)
+	// Raw input sums every selected Pod into one value rather than
+	// returning one series per Pod.
+	rawMemory := catalog.Base{Unit: catalog.UnitBytes, Scope: catalog.ScopePod, Aggregation: catalog.AggregationRaw}
+	raw := evaluate(rawMemory, catalog.StatAvg, both)[0]
+	if !raw.Present || math.Abs(raw.Value-300) > 0.01 {
+		t.Errorf("raw memory = %+v, want 300 (100 + 200)", raw)
 	}
 }
 
@@ -187,6 +224,13 @@ func buildOpenMetrics(steps []time.Time, web0, web1 []float64) string {
 	b.WriteString("# TYPE pod_cpu_complete gauge\n")
 	writeConstant("pod_cpu_complete", "web-0", "uid-web-0")
 	writeConstant("pod_cpu_complete", "web-1", "uid-web-1")
+
+	b.WriteString("# TYPE container_memory_working_set_bytes gauge\n")
+	for pod, value := range map[string]int{"web-0": 100, "web-1": 200} {
+		for _, ts := range steps {
+			fmt.Fprintf(&b, "container_memory_working_set_bytes{cluster=\"test\",namespace=\"prod\",pod=\"%s\",container=\"app\",image=\"app:v1\"} %d %d\n", pod, value, ts.Unix())
+		}
+	}
 
 	b.WriteString("# EOF\n")
 

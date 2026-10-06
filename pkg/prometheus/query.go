@@ -14,12 +14,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package prometheus renders structured metric requests to PromQL and
-// safely executes/decodes them against a Prometheus-compatible backend. It
-// has no knowledge of catalogs, caching, or Kubernetes objects: callers
-// supply already-resolved, escaped identity names — pod names for pod
-// scope, a single node name for node scope (design.md §8; metric-gateway.md
-// §3.2, §3.7).
+// Package prometheus evaluates a catalog base's temporal statistic over
+// resolved Kubernetes targets against a Prometheus-compatible backend
+// (design.md §8; metric-gateway.md §3.2, §3.7). Its interface is
+// Client.Evaluate: callers hand over the catalog base, statistic, window
+// and each target's identities, and get back one value (or a confirmed
+// absence) per target. PromQL rendering, the aligned evaluation time,
+// raw-versus-normalized input, coverage/freshness validation and the
+// per-computation backend query budget all stay inside this package. It
+// knows nothing about caching or Kubernetes objects.
 package prometheus
 
 import (
@@ -29,76 +32,45 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/catalog"
 )
 
-// Scope is whether a request targets pod-scoped or node-scoped identities.
-// Defined locally (not imported from pkg/catalog) so this package
-// stays independent of the catalog's configuration model.
-type Scope string
-
-// The two supported scopes.
-const (
-	ScopePod  Scope = "pod"
-	ScopeNode Scope = "node"
-)
-
-// Quantity is the physical quantity a request measures. Combined with
-// Scope it selects the fixed completeness-series name (metric-gateway.md
-// §8: "Completeness/lifecycle series names and label schema are fixed in
-// v1"), independent of whichever usage series name the catalog configures.
-type Quantity string
+// quantity is the physical quantity a request measures, derived from the
+// catalog base's unit. Combined with the base's scope it selects the fixed
+// completeness-series name (metric-gateway.md §8: "Completeness/lifecycle
+// series names and label schema are fixed in v1"), independent of
+// whichever usage series name the catalog configures.
+type quantity string
 
 // The two supported quantities.
 const (
-	QuantityCPU    Quantity = "cpu"
-	QuantityMemory Quantity = "memory"
+	quantityCPU    quantity = "cpu"
+	quantityMemory quantity = "memory"
 )
 
-// Aggregation selects how multiple identities combine into one value
-// (metric-gateway.md §3.2), or opts a base out of the normalized input
-// contract entirely.
-type Aggregation string
+// quantityFor maps a catalog unit to the quantity it measures.
+func quantityFor(unit catalog.Unit) quantity {
+	if unit == catalog.UnitCores {
+		return quantityCPU
+	}
 
-// The three supported aggregation strategies. AggregationSumThenStat and
-// AggregationStatThenSum operate on normalized recording-rule input
-// (Series) with full coverage/freshness validation against
-// pod_active/pod_cpu_complete/pod_memory_complete or
-// node_active/node_complete (§3.7). AggregationRaw instead computes
-// directly from raw cAdvisor/node-exporter series
-// (container_cpu_usage_seconds_total, container_memory_working_set_bytes,
-// node_cpu_seconds_total, node_memory_MemTotal_bytes/MemAvailable_bytes)
-// with no such validation, for clusters that do not run the normalized
-// active/completeness recording rules; Client.Query skips the
-// any-active/coverage/freshness queries entirely for this aggregation
-// (client.go), so a scrape gap or restart can silently under/over-count.
-const (
-	AggregationSumThenStat Aggregation = "sum-then-stat"
-	AggregationStatThenSum Aggregation = "stat-then-sum"
-	AggregationRaw         Aggregation = "raw"
-)
-
-// Stat is one of the eight supported temporal statistics.
-type Stat string
-
-// The eight supported statistics.
-const (
-	StatAvg    Stat = "avg"
-	StatMax    Stat = "max"
-	StatMin    Stat = "min"
-	StatP50    Stat = "p50"
-	StatP90    Stat = "p90"
-	StatP95    Stat = "p95"
-	StatP99    Stat = "p99"
-	StatStddev Stat = "stddev"
-)
+	return quantityMemory
+}
 
 // gridStep is the fixed evaluation grid normalized recording rules and
 // subqueries use (metric-gateway.md §3.2).
-const gridStep = "60s"
+const (
+	gridStep         = "60s"
+	gridStepDuration = 60 * time.Second
+)
 
-// Request describes one target's computation: the exact identity set to
-// aggregate, rendered against one normalized input series.
-type Request struct {
+// request describes one target's rendered expression: the exact identity
+// set to aggregate, rendered against one normalized input series.
+// catalog.AggregationRaw bypasses the normalized input contract and
+// computes directly from raw cAdvisor/node-exporter series with no
+// active/coverage/freshness validation (renderRawUsage).
+type request struct {
 	// Cluster is the exact backend cluster label. Empty omits the cluster
 	// matcher entirely rather than matching an empty label value, so a
 	// single-cluster backend with no "cluster" label still works.
@@ -109,12 +81,11 @@ type Request struct {
 	Series string
 	// Scope and Quantity together select the fixed lifecycle/completeness
 	// series names, independent of Series' configured name.
-	Scope    Scope
-	Quantity Quantity
-	// Aggregation selects sum-then-stat or stat-then-sum. Immaterial (but
-	// still required to be one of the two valid values) when len(UIDs)==1.
-	Aggregation Aggregation
-	Stat        Stat
+	Scope    catalog.Scope
+	Quantity quantity
+	// Aggregation selects sum-then-stat, stat-then-sum or raw.
+	Aggregation catalog.Aggregation
+	Stat        catalog.Stat
 	// Window is the requested statistical window.
 	Window time.Duration
 	// Namespace scopes pod-scoped queries; empty for node scope.
@@ -124,17 +95,15 @@ type Request struct {
 	// never be empty — an empty selection must never become an
 	// unrestricted query (metric-gateway.md §3.3).
 	Names []string
-	// QueryTime is the single evaluation instant for this computation,
-	// captured once and aligned to the last fully completed grid step
-	// (metric-gateway.md §3.2). Use AlignToGrid.
-	QueryTime time.Time
 }
 
-// Sentinel/typed errors Query can return, distinguishing the caller-facing
-// status code they map to.
+// Sentinel/typed errors Evaluate can return, distinguishing the
+// caller-facing status code they map to.
 var (
-	// ErrEmptySelection means Request.Names was empty.
-	ErrEmptySelection = errors.New("prometheus: empty UID selection")
+	// ErrEmptySelection means a rendered expression had no identities.
+	// Evaluate never renders one (targets without identities are absent),
+	// so this only guards the renderers themselves.
+	ErrEmptySelection = errors.New("prometheus: empty identity selection")
 	// ErrQueryTooLarge means a rendered query exceeded the configured
 	// size limit (metric-gateway.md §6.3) — maps to 413.
 	ErrQueryTooLarge = errors.New("prometheus: rendered query exceeds size limit")
@@ -149,16 +118,16 @@ var (
 	ErrBackend = errors.New("prometheus: backend query failed")
 )
 
-// AlignToGrid rounds t down to the last fully completed 15-second grid
-// step (metric-gateway.md §3.2). Callers capture this once per computation
-// and reuse it for every Request in that computation.
-func AlignToGrid(t time.Time) time.Time {
-	return t.Truncate(15 * time.Second)
+// alignToGrid rounds t down to the last fully completed 60-second grid
+// step (metric-gateway.md §3.2). Evaluate captures this once per
+// computation and uses it for every query in that computation.
+func alignToGrid(t time.Time) time.Time {
+	return t.Truncate(gridStepDuration)
 }
 
 // activeSeriesName returns the fixed lifecycle series name for scope.
-func activeSeriesName(scope Scope) string {
-	if scope == ScopeNode {
+func activeSeriesName(scope catalog.Scope) string {
+	if scope == catalog.ScopeNode {
 		return "node_active"
 	}
 
@@ -170,11 +139,11 @@ func activeSeriesName(scope Scope) string {
 // both quantities: both usage series come from the same node-exporter
 // scrape, so node_cpu_complete and node_memory_complete would always be
 // identical (monitoring/rules.yaml).
-func completeSeriesName(scope Scope, quantity Quantity) string {
-	if scope == ScopeNode {
+func completeSeriesName(scope catalog.Scope, quantity quantity) string {
+	if scope == catalog.ScopeNode {
 		return "node_complete"
 	}
-	if quantity == QuantityCPU {
+	if quantity == quantityCPU {
 		return "pod_cpu_complete"
 	}
 
@@ -186,8 +155,8 @@ var nameMetaRegexp = regexp.MustCompile(`[.+*?()|[\]{}^$\\]`)
 // identityLabel returns the label name a scope's identities are matched
 // on: node names identify node-scoped series, pod names identify
 // pod-scoped ones.
-func identityLabel(scope Scope) string {
-	if scope == ScopeNode {
+func identityLabel(scope catalog.Scope) string {
+	if scope == catalog.ScopeNode {
 		return "node"
 	}
 
@@ -247,30 +216,30 @@ func formatWindow(d time.Duration) string {
 
 // statFunc returns the *_over_time function name for avg/max/min/stddev.
 // Quantiles are rendered separately via quantileArg.
-func statFunc(stat Stat) (string, bool) {
+func statFunc(stat catalog.Stat) (string, bool) {
 	switch stat {
-	case StatAvg:
+	case catalog.StatAvg:
 		return "avg_over_time", true
-	case StatMax:
+	case catalog.StatMax:
 		return "max_over_time", true
-	case StatMin:
+	case catalog.StatMin:
 		return "min_over_time", true
-	case StatStddev:
+	case catalog.StatStddev:
 		return "stddev_over_time", true
 	default:
 		return "", false
 	}
 }
 
-func quantileArg(stat Stat) (string, bool) {
+func quantileArg(stat catalog.Stat) (string, bool) {
 	switch stat {
-	case StatP50:
+	case catalog.StatP50:
 		return "0.5", true
-	case StatP90:
+	case catalog.StatP90:
 		return "0.9", true
-	case StatP95:
+	case catalog.StatP95:
 		return "0.95", true
-	case StatP99:
+	case catalog.StatP99:
 		return "0.99", true
 	default:
 		return "", false
@@ -278,7 +247,7 @@ func quantileArg(stat Stat) (string, bool) {
 }
 
 // wrapStat wraps rangeVector with the PromQL function for stat.
-func wrapStat(stat Stat, rangeVector string) (string, error) {
+func wrapStat(stat catalog.Stat, rangeVector string) (string, error) {
 	if fn, ok := statFunc(stat); ok {
 		return fmt.Sprintf("%s(%s)", fn, rangeVector), nil
 	}
@@ -301,7 +270,7 @@ func wrapStat(stat Stat, rangeVector string) (string, error) {
 // sums the results; explicit zero-fill for confirmed-inactive points is
 // required here so every member's statistic covers the same union-active
 // grid width, not just the instants it happened to report a sample.
-func renderUsage(req Request) (string, error) {
+func renderUsage(req request) (string, error) {
 	if len(req.Names) == 0 {
 		return "", ErrEmptySelection
 	}
@@ -311,12 +280,12 @@ func renderUsage(req Request) (string, error) {
 	window := formatWindow(req.Window)
 
 	switch req.Aggregation {
-	case AggregationSumThenStat:
+	case catalog.AggregationSumThenStat:
 		rangeVector := fmt.Sprintf("(sum(%s))[%s:%s]", sel, window, gridStep)
 
 		return wrapStat(req.Stat, rangeVector)
 
-	case AggregationStatThenSum:
+	case catalog.AggregationStatThenSum:
 		activeSel := selector(activeSeriesName(req.Scope), req.Cluster, req.Namespace, idLabel, req.Names)
 		zeroFilled := fmt.Sprintf("(%s or (%s == 0))", sel, activeSel)
 		rangeVector := fmt.Sprintf("%s[%s:%s]", zeroFilled, window, gridStep)
@@ -333,7 +302,7 @@ func renderUsage(req Request) (string, error) {
 	}
 }
 
-// Raw series AggregationRaw computes from directly, bypassing Request.Series
+// Raw series catalog.AggregationRaw computes from directly, bypassing request.Series
 // and the normalized recording-rule input contract entirely (§8).
 const (
 	rawContainerCPUSeries     = "container_cpu_usage_seconds_total"
@@ -349,52 +318,54 @@ const (
 // guest double counting.
 const rawNodeCPUModes = "user|nice|system|irq|softirq|steal"
 
-// renderRawUsage renders AggregationRaw's usage expression, computing
+// renderRawUsage renders catalog.AggregationRaw's usage expression, computing
 // directly from raw cAdvisor/node-exporter series the same way
 // monitoring/rules.yaml's recording rules do, but inline at query time
 // instead of via a recording rule, and with no
-// active/completeness/freshness validation — Client.Query never issues the
+// active/completeness/freshness validation — Evaluate never issues the
 // any-active/coverage/freshness queries for this aggregation (client.go).
-func renderRawUsage(req Request) (string, error) {
+func renderRawUsage(req request) (string, error) {
 	if len(req.Names) == 0 {
 		return "", ErrEmptySelection
 	}
 
 	switch req.Scope {
-	case ScopePod:
+	case catalog.ScopePod:
 		return renderRawPodUsage(req)
-	case ScopeNode:
+	case catalog.ScopeNode:
 		return renderRawNodeUsage(req)
 	default:
-		return "", fmt.Errorf("prometheus: aggregation %q: unknown scope %q", AggregationRaw, req.Scope)
+		return "", fmt.Errorf("prometheus: aggregation %q: unknown scope %q", catalog.AggregationRaw, req.Scope)
 	}
 }
 
-// renderRawPodUsage sums raw per-container cAdvisor series into a
-// per-identity value (five-minute rate before sum for CPU, deduplicating a
-// double-scraped container with max by container), mirroring
-// pod_cpu_usage_cores/pod_memory_working_set_bytes.
-func renderRawPodUsage(req Request) (string, error) {
+// renderRawPodUsage sums raw per-container cAdvisor series across every
+// selected Pod at each grid step (five-minute rate before sum for CPU,
+// deduplicating a double-scraped container with max by pod and container),
+// then applies the statistic — sum-then-stat over the same inputs
+// pod_cpu_usage_cores/pod_memory_working_set_bytes normalize. The result
+// is always one series, however many Pods the target selects.
+func renderRawPodUsage(req request) (string, error) {
 	var series string
 	switch req.Quantity {
-	case QuantityCPU:
+	case quantityCPU:
 		series = rawContainerCPUSeries
-	case QuantityMemory:
+	case quantityMemory:
 		series = rawContainerMemorySeries
 	default:
-		return "", fmt.Errorf("prometheus: aggregation %q: unknown quantity %q", AggregationRaw, req.Quantity)
+		return "", fmt.Errorf("prometheus: aggregation %q: unknown quantity %q", catalog.AggregationRaw, req.Quantity)
 	}
 
 	idLabel := identityLabel(req.Scope)
 	matchers := containerMatchers(req.Cluster, req.Namespace, idLabel, req.Names)
 
 	perContainer := fmt.Sprintf("%s{%s}", series, matchers)
-	if req.Quantity == QuantityCPU {
+	if req.Quantity == quantityCPU {
 		perContainer = fmt.Sprintf("rate(%s[5m])", perContainer)
 	}
 
-	perIdentity := fmt.Sprintf("sum by (%s) (max by (%s, container) (%s))", idLabel, idLabel, perContainer)
-	rangeVector := fmt.Sprintf("(%s)[%s:%s]", perIdentity, formatWindow(req.Window), gridStep)
+	total := fmt.Sprintf("sum(max by (%s, container) (%s))", idLabel, perContainer)
+	rangeVector := fmt.Sprintf("(%s)[%s:%s]", total, formatWindow(req.Window), gridStep)
 
 	return wrapStat(req.Stat, rangeVector)
 }
@@ -407,23 +378,23 @@ func renderRawPodUsage(req Request) (string, error) {
 // typically the scrape target address/pod IP, not the Kubernetes Node
 // name — "kubernetes_node_name" is the label node-exporter's scrape
 // relabeling is expected to carry instead.
-func renderRawNodeUsage(req Request) (string, error) {
+func renderRawNodeUsage(req request) (string, error) {
 	matchers := nodeExporterMatchers(req.Cluster, req.Names)
 
 	var perIdentity string
 	switch req.Quantity {
-	case QuantityCPU:
+	case quantityCPU:
 		perIdentity = fmt.Sprintf(
 			`sum(max by (mode) (rate(%s{mode=~"%s",%s}[5m])))`,
 			rawNodeCPUSeries, rawNodeCPUModes, matchers,
 		)
-	case QuantityMemory:
+	case quantityMemory:
 		perIdentity = fmt.Sprintf(
 			"(max(%s{%s}) - max(%s{%s}))",
 			rawNodeMemTotalSeries, matchers, rawNodeMemAvailableSeries, matchers,
 		)
 	default:
-		return "", fmt.Errorf("prometheus: aggregation %q: unknown quantity %q", AggregationRaw, req.Quantity)
+		return "", fmt.Errorf("prometheus: aggregation %q: unknown quantity %q", catalog.AggregationRaw, req.Quantity)
 	}
 
 	rangeVector := fmt.Sprintf("(%s)[%s:%s]", perIdentity, formatWindow(req.Window), gridStep)
@@ -466,7 +437,7 @@ func nodeExporterMatchers(cluster string, names []string) string {
 // one selected identity was active anywhere in the window, and absent
 // otherwise — distinguishing a genuinely absent metric (404 for named
 // requests) from a coverage/freshness failure (metric-gateway.md §3.7).
-func renderAnyActive(req Request) (string, error) {
+func renderAnyActive(req request) (string, error) {
 	if len(req.Names) == 0 {
 		return "", ErrEmptySelection
 	}
@@ -481,7 +452,7 @@ func renderAnyActive(req Request) (string, error) {
 // complete==1 signal or a usage sample at that same grid point — the
 // combined completeness-signal and raw-series-gap check
 // (metric-gateway.md §3.7).
-func renderCoverage(req Request) (string, error) {
+func renderCoverage(req request) (string, error) {
 	if len(req.Names) == 0 {
 		return "", ErrEmptySelection
 	}
@@ -503,7 +474,7 @@ func renderCoverage(req Request) (string, error) {
 // observed staleness in seconds) if any selected identity's active signal
 // carried a sample; the caller rejects results over the 30-second
 // freshness gate (metric-gateway.md §3.7).
-func renderFreshness(req Request) (string, error) {
+func renderFreshness(req request) (string, error) {
 	if len(req.Names) == 0 {
 		return "", ErrEmptySelection
 	}
