@@ -122,6 +122,11 @@ helm-unit: ## Helm Unit Tests
 	@helm lint charts/kubernetes-custom-metrics
 	@helm template -f charts/kubernetes-custom-metrics/ci/values.yaml kubernetes-custom-metrics charts/kubernetes-custom-metrics >/dev/null
 
+.PHONY: helm-prepare
+helm-prepare: ## Prepare Helm Chart for Release
+	sh hack/bump-chart-version.sh kubernetes-custom-metrics false false true
+	yq -i '.appVersion = "$(TAG)"' charts/kubernetes-custom-metrics/Chart.yaml
+
 .PHONY: helm-login
 helm-login: ## Helm Login
 	@echo "${HELM_TOKEN}" | helm registry login $(REGISTRY) --username $(USERNAME) --password-stdin

@@ -5,10 +5,10 @@ kind: ServiceAccount
 metadata:
   name: kubernetes-custom-metrics
   labels:
-    helm.sh/chart: kubernetes-custom-metrics-0.0.4
+    helm.sh/chart: kubernetes-custom-metrics-0.0.5
     app.kubernetes.io/name: kubernetes-custom-metrics
     app.kubernetes.io/instance: kubernetes-custom-metrics
-    app.kubernetes.io/version: "v0.2.0"
+    app.kubernetes.io/version: "v0.2.1"
     app.kubernetes.io/managed-by: Helm
 automountServiceAccountToken: true
 
@@ -19,10 +19,10 @@ kind: Secret
 metadata:
   name: kubernetes-custom-metrics
   labels:
-    helm.sh/chart: kubernetes-custom-metrics-0.0.4
+    helm.sh/chart: kubernetes-custom-metrics-0.0.5
     app.kubernetes.io/name: kubernetes-custom-metrics
     app.kubernetes.io/instance: kubernetes-custom-metrics
-    app.kubernetes.io/version: "v0.2.0"
+    app.kubernetes.io/version: "v0.2.1"
     app.kubernetes.io/managed-by: Helm
 data:
 
@@ -33,10 +33,10 @@ kind: ConfigMap
 metadata:
   name: kubernetes-custom-metrics
   labels:
-    helm.sh/chart: kubernetes-custom-metrics-0.0.4
+    helm.sh/chart: kubernetes-custom-metrics-0.0.5
     app.kubernetes.io/name: kubernetes-custom-metrics
     app.kubernetes.io/instance: kubernetes-custom-metrics
-    app.kubernetes.io/version: "v0.2.0"
+    app.kubernetes.io/version: "v0.2.1"
     app.kubernetes.io/managed-by: Helm
 data:
   catalog.yaml: |
@@ -69,10 +69,10 @@ kind: ClusterRole
 metadata:
   name: kubernetes-custom-metrics
   labels:
-    helm.sh/chart: kubernetes-custom-metrics-0.0.4
+    helm.sh/chart: kubernetes-custom-metrics-0.0.5
     app.kubernetes.io/name: kubernetes-custom-metrics
     app.kubernetes.io/instance: kubernetes-custom-metrics
-    app.kubernetes.io/version: "v0.2.0"
+    app.kubernetes.io/version: "v0.2.1"
     app.kubernetes.io/managed-by: Helm
 rules:
   - apiGroups:
@@ -111,10 +111,10 @@ kind: ClusterRoleBinding
 metadata:
   name: kubernetes-custom-metrics
   labels:
-    helm.sh/chart: kubernetes-custom-metrics-0.0.4
+    helm.sh/chart: kubernetes-custom-metrics-0.0.5
     app.kubernetes.io/name: kubernetes-custom-metrics
     app.kubernetes.io/instance: kubernetes-custom-metrics
-    app.kubernetes.io/version: "v0.2.0"
+    app.kubernetes.io/version: "v0.2.1"
     app.kubernetes.io/managed-by: Helm
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -132,10 +132,10 @@ kind: ClusterRoleBinding
 metadata:
   name: kubernetes-custom-metrics:auth-delegator
   labels:
-    helm.sh/chart: kubernetes-custom-metrics-0.0.4
+    helm.sh/chart: kubernetes-custom-metrics-0.0.5
     app.kubernetes.io/name: kubernetes-custom-metrics
     app.kubernetes.io/instance: kubernetes-custom-metrics
-    app.kubernetes.io/version: "v0.2.0"
+    app.kubernetes.io/version: "v0.2.1"
     app.kubernetes.io/managed-by: Helm
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -153,10 +153,10 @@ kind: RoleBinding
 metadata:
   name: kubernetes-custom-metrics:auth-reader
   labels:
-    helm.sh/chart: kubernetes-custom-metrics-0.0.4
+    helm.sh/chart: kubernetes-custom-metrics-0.0.5
     app.kubernetes.io/name: kubernetes-custom-metrics
     app.kubernetes.io/instance: kubernetes-custom-metrics
-    app.kubernetes.io/version: "v0.2.0"
+    app.kubernetes.io/version: "v0.2.1"
     app.kubernetes.io/managed-by: Helm
   namespace: kube-system
 roleRef:
@@ -175,10 +175,10 @@ kind: Service
 metadata:
   name: kubernetes-custom-metrics
   labels:
-    helm.sh/chart: kubernetes-custom-metrics-0.0.4
+    helm.sh/chart: kubernetes-custom-metrics-0.0.5
     app.kubernetes.io/name: kubernetes-custom-metrics
     app.kubernetes.io/instance: kubernetes-custom-metrics
-    app.kubernetes.io/version: "v0.2.0"
+    app.kubernetes.io/version: "v0.2.1"
     app.kubernetes.io/managed-by: Helm
 spec:
   type: ClusterIP
@@ -201,10 +201,10 @@ kind: Deployment
 metadata:
   name: kubernetes-custom-metrics
   labels:
-    helm.sh/chart: kubernetes-custom-metrics-0.0.4
+    helm.sh/chart: kubernetes-custom-metrics-0.0.5
     app.kubernetes.io/name: kubernetes-custom-metrics
     app.kubernetes.io/instance: kubernetes-custom-metrics
-    app.kubernetes.io/version: "v0.2.0"
+    app.kubernetes.io/version: "v0.2.1"
     app.kubernetes.io/managed-by: Helm
 spec:
   replicas: 1
@@ -219,12 +219,12 @@ spec:
   template:
     metadata:
       annotations:
-        checksum/config: 1d5f11a05e3ff66861c29dd81cfca8d72d3d3745eaec1d3cdbacd6d13ca1c265
+        checksum/config: f3e958acb00fdadedb9ea2e3fb9f44c9a9021e2e3f9aafd0b180eb89c80f6663
       labels:
-        helm.sh/chart: kubernetes-custom-metrics-0.0.4
+        helm.sh/chart: kubernetes-custom-metrics-0.0.5
         app.kubernetes.io/name: kubernetes-custom-metrics
         app.kubernetes.io/instance: kubernetes-custom-metrics
-        app.kubernetes.io/version: "v0.2.0"
+        app.kubernetes.io/version: "v0.2.1"
         app.kubernetes.io/managed-by: Helm
     spec:
       enableServiceLinks: false
@@ -328,10 +328,10 @@ kind: Certificate
 metadata:
   name: kubernetes-custom-metrics-ca
   labels:
-    helm.sh/chart: kubernetes-custom-metrics-0.0.4
+    helm.sh/chart: kubernetes-custom-metrics-0.0.5
     app.kubernetes.io/name: kubernetes-custom-metrics
     app.kubernetes.io/instance: kubernetes-custom-metrics
-    app.kubernetes.io/version: "v0.2.0"
+    app.kubernetes.io/version: "v0.2.1"
     app.kubernetes.io/managed-by: Helm
   namespace: kube-system
 spec:
@@ -355,10 +355,10 @@ kind: Certificate
 metadata:
   name: kubernetes-custom-metrics-tls
   labels:
-    helm.sh/chart: kubernetes-custom-metrics-0.0.4
+    helm.sh/chart: kubernetes-custom-metrics-0.0.5
     app.kubernetes.io/name: kubernetes-custom-metrics
     app.kubernetes.io/instance: kubernetes-custom-metrics
-    app.kubernetes.io/version: "v0.2.0"
+    app.kubernetes.io/version: "v0.2.1"
     app.kubernetes.io/managed-by: Helm
   namespace: kube-system
 spec:
@@ -386,10 +386,10 @@ kind: Issuer
 metadata:
   name: kubernetes-custom-metrics
   labels:
-    helm.sh/chart: kubernetes-custom-metrics-0.0.4
+    helm.sh/chart: kubernetes-custom-metrics-0.0.5
     app.kubernetes.io/name: kubernetes-custom-metrics
     app.kubernetes.io/instance: kubernetes-custom-metrics
-    app.kubernetes.io/version: "v0.2.0"
+    app.kubernetes.io/version: "v0.2.1"
     app.kubernetes.io/managed-by: Helm
   namespace: kube-system
 spec:

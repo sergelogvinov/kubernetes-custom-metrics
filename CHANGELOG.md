@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/sergelogvinov/kubernetes-custom-metrics/compare/v0.2.0...v0.2.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* goreleaser ([94f4464](https://github.com/sergelogvinov/kubernetes-custom-metrics/commit/94f446464ca2d3ba5079ef9b2f611f65d0215867))
+
 ## [0.2.0](https://github.com/sergelogvinov/kubernetes-custom-metrics/compare/v0.1.0...v0.2.0) (2026-09-30)
 
 

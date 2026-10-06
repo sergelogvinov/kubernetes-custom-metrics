@@ -14,7 +14,7 @@ git checkout release-please--branches--main
 export `jq -r '"TAG=v"+.[]' .github/release-please-manifest.json`
 
 sh hack/bump-chart-version.sh kubernetes-custom-metrics false false true
-make helm-unit docs
+make helm-prepare helm-unit docs
 
 git add .
 git commit -s --amend
