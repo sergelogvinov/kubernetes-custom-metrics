@@ -65,7 +65,7 @@ func New() *Metrics {
 		}, []string{"resource", "metric"}),
 		QueryErrors: metrics.NewCounterVec(&metrics.CounterOpts{
 			Name:           "gateway_query_errors_total",
-			Help:           "Number of computation failures, by reason.",
+			Help:           "Number of failed metric requests, by reason.",
 			StabilityLevel: metrics.ALPHA,
 		}, []string{"reason"}),
 		CronJobFallback: metrics.NewCounter(&metrics.CounterOpts{

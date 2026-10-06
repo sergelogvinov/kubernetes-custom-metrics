@@ -30,23 +30,21 @@ import (
 
 	promapi "github.com/prometheus/client_golang/api"
 	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
-	"golang.org/x/sync/errgroup"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/clock"
 )
 
 // maxDecompressedResponseBytes bounds one backend response body, after
 // transport-level decompression (metric-gateway.md §6.3).
 const maxDecompressedResponseBytes = 16 << 20
 
-// Result is one successfully computed, validated metric value.
-type Result struct {
-	Value     float64
-	Timestamp time.Time
-}
-
 // ClientConfig configures the bounded backend HTTP transport
 // (metric-gateway.md §6.1).
 type ClientConfig struct {
+	// Cluster is the exact backend "cluster" label every query matches.
+	// Empty omits the matcher, for a single-cluster backend with no
+	// "cluster" label.
+	Cluster string
 	// URL is the Prometheus base address, e.g.
 	// "https://prometheus.monitoring.svc:9090". Required. Must not contain
 	// userinfo.
@@ -68,10 +66,13 @@ type ClientConfig struct {
 	// Client will have in flight at once, process-wide
 	// (default DefaultMaxConcurrentQueries —
 	// metric-gateway.md §6.3: "at most 16 backend queries run
-	// concurrently per process"). Query calls beyond the limit block
+	// concurrently per process"). Queries beyond the limit block
 	// (queue) rather than being rejected; this is a resource-protection
 	// bound on the backend, not a caller-facing admission decision.
 	MaxConcurrentQueries int
+	// Clock captures each computation's evaluation time
+	// (default clock.RealClock{}).
+	Clock clock.PassiveClock
 }
 
 // Defaults applied by NewClient to zero-valued ClientConfig fields. The
@@ -83,28 +84,16 @@ const (
 	DefaultMaxConcurrentQueries = 16
 )
 
-// Querier is the narrow surface internal/gateway depends on.
-type Querier interface {
-	// Query computes req's value. It returns (result, true, nil) when at
-	// least one selected identity was active with complete, fresh
-	// coverage; (Result{}, false, nil) when no selected identity was ever
-	// active in the window (a genuinely absent metric, not an error); or a
-	// non-nil error — one of ErrEmptySelection, ErrQueryTooLarge,
-	// ErrIncompleteCoverage, ErrStaleData, ErrBackend, or a context
-	// error — otherwise.
-	Query(ctx context.Context, req Request) (Result, bool, error)
-}
-
 // Client is a bounded Prometheus HTTP API client. TLS verification is
 // never disabled; credential-bearing redirects and URLs are rejected
 // (metric-gateway.md §6.1).
 type Client struct {
 	api     promv1.API
+	cluster string
+	clock   clock.PassiveClock
 	timeout time.Duration
 	queries chan struct{} // counting semaphore bounding concurrent backend queries
 }
-
-var _ Querier = (*Client)(nil)
 
 // NewClient builds a Client from cfg.
 func NewClient(cfg ClientConfig) (*Client, error) {
@@ -134,6 +123,10 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	maxConcurrentQueries := cfg.MaxConcurrentQueries
 	if maxConcurrentQueries <= 0 {
 		maxConcurrentQueries = DefaultMaxConcurrentQueries
+	}
+	clk := cfg.Clock
+	if clk == nil {
+		clk = clock.RealClock{}
 	}
 
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
@@ -167,114 +160,13 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		return nil, fmt.Errorf("prometheus: building client: %w", err)
 	}
 
-	return &Client{api: promv1.NewAPI(apiClient), timeout: timeout, queries: make(chan struct{}, maxConcurrentQueries)}, nil
-}
-
-// Query implements Querier. For req.Aggregation == AggregationRaw it
-// delegates to queryRaw (a single unvalidated usage query). Otherwise it
-// issues up to four concurrent backend queries — matching the "at most
-// four [backend queries] per shared computation" v1 budget
-// (metric-gateway.md §6.3) — and combines their results: whether any
-// identity was ever active in the window, whether coverage/completeness
-// held throughout, whether data stayed within the freshness gate, and the
-// aggregated usage value itself.
-func (c *Client) Query(ctx context.Context, req Request) (Result, bool, error) {
-	if len(req.Names) == 0 {
-		return Result{}, false, ErrEmptySelection
-	}
-
-	if req.Aggregation == AggregationRaw {
-		return c.queryRaw(ctx, req)
-	}
-
-	usageQuery, err := renderUsage(req)
-	if err != nil {
-		return Result{}, false, err
-	}
-	anyActiveQuery, err := renderAnyActive(req)
-	if err != nil {
-		return Result{}, false, err
-	}
-	coverageQuery, err := renderCoverage(req)
-	if err != nil {
-		return Result{}, false, err
-	}
-	freshnessQuery, err := renderFreshness(req)
-	if err != nil {
-		return Result{}, false, err
-	}
-	for _, q := range []string{usageQuery, anyActiveQuery, coverageQuery, freshnessQuery} {
-		if err := checkQuerySize(q); err != nil {
-			return Result{}, false, err
-		}
-	}
-
-	var (
-		usageValue                        float64
-		usagePresent                      bool
-		anyActiveValue, coverageValue     float64
-		anyActivePresent, coveragePresent bool
-		freshnessValue                    float64
-		freshnessPresent                  bool
-	)
-
-	group, groupCtx := errgroup.WithContext(ctx)
-	group.Go(func() error {
-		v, present, err := c.run(groupCtx, usageQuery, req.QueryTime)
-		usageValue, usagePresent = v, present
-
-		return err
-	})
-	group.Go(func() error {
-		v, present, err := c.run(groupCtx, anyActiveQuery, req.QueryTime)
-		anyActiveValue, anyActivePresent = v, present
-
-		return err
-	})
-	group.Go(func() error {
-		v, present, err := c.run(groupCtx, coverageQuery, req.QueryTime)
-		coverageValue, coveragePresent = v, present
-
-		return err
-	})
-	group.Go(func() error {
-		v, present, err := c.run(groupCtx, freshnessQuery, req.QueryTime)
-		freshnessValue, freshnessPresent = v, present
-
-		return err
-	})
-
-	if err := group.Wait(); err != nil {
-		return Result{}, false, err
-	}
-
-	if !anyActivePresent || anyActiveValue <= 0 {
-		// No selected identity was ever active in the window: a
-		// genuinely absent metric (metric-gateway.md §3.7), not an
-		// error.
-		return Result{}, false, nil
-	}
-
-	if coveragePresent && coverageValue > 0 {
-		return Result{}, false, ErrIncompleteCoverage
-	}
-
-	const freshnessGateSeconds = 30
-	if freshnessPresent && freshnessValue > freshnessGateSeconds {
-		return Result{}, false, ErrStaleData
-	}
-
-	if !usagePresent {
-		// An active member exists but the usage series itself has no
-		// sample: treat as incomplete coverage rather than silently
-		// reporting no data for an active target.
-		return Result{}, false, ErrIncompleteCoverage
-	}
-	if err := requireNonNegative(usageValue); err != nil {
-		return Result{}, false, err
-	}
-
-	return Result{Value: usageValue, Timestamp: req.QueryTime}, true, nil
+	return &Client{
+		api:     promv1.NewAPI(apiClient),
+		cluster: cfg.Cluster,
+		clock:   clk,
+		timeout: timeout,
+		queries: make(chan struct{}, maxConcurrentQueries),
+	}, nil
 }
 
 // Ping performs a bounded reachability check against the backend, for use
@@ -290,38 +182,9 @@ func (c *Client) Ping(ctx context.Context) error {
 	return err
 }
 
-// queryRaw implements Query for AggregationRaw: a single query straight
-// against raw cAdvisor/node-exporter series, with no
-// any-active/coverage/freshness validation — for clusters that do not run
-// the normalized pod_active/pod_cpu_complete/pod_memory_complete or
-// node_active/node_complete recording rules (query.go's renderRawUsage,
-// metric-gateway.md §8). Because there is no active signal, "no sample" and
-// "genuinely absent" are indistinguishable: both return (Result{}, false,
-// nil).
-func (c *Client) queryRaw(ctx context.Context, req Request) (Result, bool, error) {
-	usageQuery, err := renderRawUsage(req)
-	if err != nil {
-		return Result{}, false, err
-	}
-	if err := checkQuerySize(usageQuery); err != nil {
-		return Result{}, false, err
-	}
-
-	usageValue, usagePresent, err := c.run(ctx, usageQuery, req.QueryTime)
-	if err != nil {
-		return Result{}, false, err
-	}
-	if !usagePresent {
-		return Result{}, false, nil
-	}
-	if err := requireNonNegative(usageValue); err != nil {
-		return Result{}, false, err
-	}
-
-	return Result{Value: usageValue, Timestamp: req.QueryTime}, true, nil
-}
-
-func (c *Client) run(ctx context.Context, query string, ts time.Time) (float64, bool, error) {
+// runByTarget executes one batch query (renderBatch) at ts and decodes one
+// value per target position in [0, n).
+func (c *Client) runByTarget(ctx context.Context, query string, ts time.Time, n int) (targetValues, error) {
 	// Queueing for a slot is bounded by the caller's request deadline
 	// only; the per-query timeout starts once the query can actually be
 	// sent, so a burst of queued queries does not time out before
@@ -330,7 +193,7 @@ func (c *Client) run(ctx context.Context, query string, ts time.Time) (float64, 
 	case c.queries <- struct{}{}:
 		defer func() { <-c.queries }()
 	case <-ctx.Done():
-		return 0, false, fmt.Errorf("%w: %w", ErrBackend, ctx.Err())
+		return nil, fmt.Errorf("%w: %w", ErrBackend, ctx.Err())
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
@@ -356,10 +219,10 @@ func (c *Client) run(ctx context.Context, query string, ts time.Time) (float64, 
 		// context.DeadlineExceeded) alongside the ErrBackend
 		// classification, so callers can distinguish a timeout (504) from
 		// other backend failures (503) — metric-gateway.md §3.6.
-		return 0, false, fmt.Errorf("%w: %w", ErrBackend, ctx.Err())
+		return nil, fmt.Errorf("%w: %w", ErrBackend, ctx.Err())
 	}
 
-	return decodeSingle(value, warnings, err)
+	return decodeByTarget(value, warnings, err, n)
 }
 
 // rejectCredentialBearingRedirect enforces metric-gateway.md §6.1: "reject

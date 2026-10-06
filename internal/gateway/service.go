@@ -27,8 +27,6 @@ import (
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/cache"
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/catalog"
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/prometheus"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/utils/clock"
 )
 
 // Resolver is the narrow surface Service depends on — exactly
@@ -39,18 +37,17 @@ type Resolver interface {
 	Resolve(ctx context.Context, target resolver.Target) ([]resolver.Resolution, error)
 }
 
-// Querier is the narrow surface Service depends on — exactly
-// (*prometheus.Client).Query's signature.
-type Querier interface {
-	Query(ctx context.Context, req prometheus.Request) (prometheus.Result, bool, error)
+// Evaluator is the narrow surface Service depends on — exactly
+// (*prometheus.Client).Evaluate's signature.
+type Evaluator interface {
+	Evaluate(ctx context.Context, comp prometheus.Computation) (prometheus.Evaluation, error)
 }
 
 // Deps are Service's collaborators, constructed and wired by cmd/custom-metrics.
 type Deps struct {
-	Catalog  *catalog.Catalog
-	Cluster  string
-	Resolver Resolver
-	Querier  Querier
+	Catalog   *catalog.Catalog
+	Resolver  Resolver
+	Evaluator Evaluator
 
 	Cache        *cache.Cache[Result]
 	Flights      *cache.Group[Result]
@@ -60,10 +57,6 @@ type Deps struct {
 	CacheTTLShort time.Duration
 	CacheTTLLong  time.Duration
 
-	// Clock captures the aligned evaluation time (metric-gateway.md §3.2).
-	// Defaults to clock.RealClock{}.
-	Clock clock.Clock
-
 	// Metrics records telemetry (metric-gateway.md §4). A nil Metrics
 	// disables recording.
 	Metrics *telemetry.Metrics
@@ -72,10 +65,9 @@ type Deps struct {
 // Service implements the gateway's use-case flow independent of the
 // provider interface (design.md §6).
 type Service struct {
-	catalog  *catalog.Catalog
-	cluster  string
-	resolver Resolver
-	querier  Querier
+	catalog   *catalog.Catalog
+	resolver  Resolver
+	evaluator Evaluator
 
 	cache        *cache.Cache[Result]
 	flights      *cache.Group[Result]
@@ -85,40 +77,46 @@ type Service struct {
 	cacheTTLShort time.Duration
 	cacheTTLLong  time.Duration
 
-	clock   clock.Clock
 	metrics *telemetry.Metrics
 }
 
 // NewService builds a Service from deps, applying defaults for optional
 // fields.
 func NewService(deps Deps) *Service {
-	c := deps.Clock
-	if c == nil {
-		c = clock.RealClock{}
-	}
-
 	return &Service{
 		catalog:       deps.Catalog,
-		cluster:       deps.Cluster,
 		resolver:      deps.Resolver,
-		querier:       deps.Querier,
+		evaluator:     deps.Evaluator,
 		cache:         deps.Cache,
 		flights:       deps.Flights,
 		inflight:      deps.Inflight,
 		computations:  deps.Computations,
 		cacheTTLShort: deps.CacheTTLShort,
 		cacheTTLLong:  deps.CacheTTLLong,
-		clock:         c,
 		metrics:       deps.Metrics,
 	}
 }
 
 // Get executes the full request path from design.md §6: parse → cache
-// lookup → admission/singleflight → resolve → capture eval time → query →
-// validate coverage → build result → cache store → (telemetry throughout).
-// Step 1 (delegated authentication/authorization) has already run in
-// AdapterBase's filter chain before Get is ever called.
+// lookup → admission/singleflight → resolve → evaluate → build result →
+// cache store → (telemetry throughout). Step 1 (delegated
+// authentication/authorization) has already run in AdapterBase's filter
+// chain before Get is ever called. Every failure is a Kubernetes Status
+// error (metric-gateway.md §3.6), classified once here.
 func (s *Service) Get(ctx context.Context, req Request) (Result, error) {
+	result, err := s.get(ctx, req)
+	if err != nil {
+		reason, status := classify(err)
+		s.recordQueryError(reason)
+
+		return Result{}, status
+	}
+
+	return result, nil
+}
+
+// get is Get with unclassified, domain-typed errors.
+func (s *Service) get(ctx context.Context, req Request) (Result, error) {
 	// Step 1: parse metric syntax and validate catalog membership/resource
 	// applicability; metricLabelSelector is unsupported in v1 regardless of
 	// named/wildcard (metric-gateway.md §3.6). A nonempty object selector on
@@ -126,17 +124,17 @@ func (s *Service) Get(ctx context.Context, req Request) (Result, error) {
 	// itself (GetMetricByName takes no selector), so the framework already
 	// prevents that case before this code runs.
 	if req.MetricSelector != nil && !req.MetricSelector.Empty() {
-		return Result{}, apierrors.NewBadRequest("metricLabelSelector is not supported in v1")
+		return Result{}, metricSelectorError{}
 	}
 
 	parsed, ok := s.catalog.Parse(req.Metric)
 	if !ok {
-		return Result{}, metricNotSupportedError(req)
+		return Result{}, &metricNotSupportedError{req: req}
 	}
 
 	spec, ok := kindForGroupResource(req.GroupResource, parsed.Base)
 	if !ok {
-		return Result{}, metricNotSupportedError(req)
+		return Result{}, &metricNotSupportedError{req: req}
 	}
 
 	resourceLabel := string(spec.kind)
@@ -164,7 +162,7 @@ func (s *Service) Get(ctx context.Context, req Request) (Result, error) {
 
 	releaseInflight, err := s.inflight.TryAcquire()
 	if err != nil {
-		return Result{}, mapAdmissionError(err)
+		return Result{}, err
 	}
 	defer releaseInflight()
 
@@ -179,7 +177,7 @@ func (s *Service) Get(ctx context.Context, req Request) (Result, error) {
 
 		releaseComputation, err := s.computations.TryAcquire()
 		if err != nil {
-			return Result{}, mapAdmissionError(err)
+			return Result{}, err
 		}
 		defer releaseComputation()
 
@@ -188,17 +186,12 @@ func (s *Service) Get(ctx context.Context, req Request) (Result, error) {
 	if shared {
 		s.recordCollapsed()
 	}
-	if err != nil {
-		s.recordQueryError(err)
 
-		return Result{}, err
-	}
-
-	return result, nil
+	return result, err
 }
 
-// compute implements steps 5-8: resolve, capture one aligned evaluation
-// time, query every resolved object, build and cache the result.
+// compute implements steps 5-8: resolve, evaluate every resolved object
+// in one computation, build and cache the result.
 func (s *Service) compute(ctx context.Context, req Request, spec kindSpec, parsed catalog.ParsedMetric, key cache.Key) (Result, error) {
 	target := resolver.Target{
 		Kind:           spec.kind,
@@ -211,57 +204,41 @@ func (s *Service) compute(ctx context.Context, req Request, spec kindSpec, parse
 	if err != nil {
 		s.recordCronJobOutcome(spec.kind, err)
 
-		return Result{}, mapResolverError(err)
+		return Result{}, err
 	}
 
-	// Step 6: query time captured once per computation, aligned to the
-	// last fully completed grid step (metric-gateway.md §3.2). Every
-	// resolution in this request uses this same instant.
-	queryTime := prometheus.AlignToGrid(s.clock.Now())
+	targets := make([]prometheus.Target, len(resolutions))
+	for i, res := range resolutions {
+		s.recordCronJobFallback(spec.kind, res)
+
+		targets[i] = prometheus.Target{Name: res.Object.Name, Pods: res.PodNames}
+	}
+
+	eval, err := s.evaluator.Evaluate(ctx, prometheus.Computation{
+		Base:      parsed.Base,
+		Stat:      parsed.Stat,
+		Window:    parsed.Window.Duration(),
+		Namespace: req.Namespace,
+		Targets:   targets,
+	})
+	if err != nil {
+		return Result{}, err
+	}
 
 	items := make([]Item, 0, len(resolutions))
 
-	for _, res := range resolutions {
-		s.recordCronJobFallback(spec.kind, res)
-
-		names := identityNames(parsed.Base, res)
-		if len(names) == 0 {
-			// A workload currently selecting zero pods: no eligible
-			// retained members (metric-gateway.md §3.6).
-			if req.Name != "" {
-				return Result{}, namedObjectNotEligibleError(req)
-			}
-
-			continue
-		}
-
-		pReq := prometheus.Request{
-			Cluster:     s.cluster,
-			Series:      parsed.Base.Series,
-			Scope:       prometheus.Scope(parsed.Base.Scope),
-			Quantity:    quantityFor(parsed.Base.Unit),
-			Aggregation: prometheus.Aggregation(parsed.Base.Aggregation),
-			Stat:        prometheus.Stat(parsed.Stat),
-			Window:      parsed.Window.Duration(),
-			Namespace:   req.Namespace,
-			Names:       names,
-			QueryTime:   queryTime,
-		}
-
-		queried, ok, err := s.querier.Query(ctx, pReq)
-		if err != nil {
-			return Result{}, mapQuerierError(err)
-		}
-		if !ok {
+	for i, sample := range eval.Samples {
+		if !sample.Present {
 			// No eligible retained members, or verified inactivity
 			// throughout the window (metric-gateway.md §3.6).
 			if req.Name != "" {
-				return Result{}, namedObjectNotEligibleError(req)
+				return Result{}, &notEligibleError{req: req}
 			}
 
 			continue
 		}
 
+		res := resolutions[i]
 		items = append(items, Item{
 			APIVersion: spec.apiVersion,
 			Kind:       string(spec.kind),
@@ -269,9 +246,9 @@ func (s *Service) compute(ctx context.Context, req Request, spec kindSpec, parse
 			Name:       res.Object.Name,
 			UID:        res.Object.UID,
 			MetricName: req.Metric,
-			Value:      queried.Value,
+			Value:      sample.Value,
 			Unit:       parsed.Base.Unit,
-			Timestamp:  queried.Timestamp,
+			Timestamp:  eval.Time,
 			Window:     parsed.Window.Duration(),
 		})
 	}
@@ -284,26 +261,6 @@ func (s *Service) compute(ctx context.Context, req Request, spec kindSpec, parse
 	s.cache.Set(key, result, ttl)
 
 	return result, nil
-}
-
-// identityNames returns the exact escaped identity name set a base's
-// normalized series query aggregates over: a node-scoped base keys off the
-// resolved object's own name directly (there is no "member" concept for a
-// Node); a pod-scoped base uses the resolver's retained Pod names.
-func identityNames(base catalog.Base, res resolver.Resolution) []string {
-	if base.Scope == catalog.ScopeNode {
-		return []string{res.Object.Name}
-	}
-
-	return res.PodNames
-}
-
-func quantityFor(unit catalog.Unit) prometheus.Quantity {
-	if unit == catalog.UnitCores {
-		return prometheus.QuantityCPU
-	}
-
-	return prometheus.QuantityMemory
 }
 
 // keyString renders key as a stable string for the singleflight group,
@@ -339,9 +296,9 @@ func (s *Service) recordCollapsed() {
 	}
 }
 
-func (s *Service) recordQueryError(err error) {
+func (s *Service) recordQueryError(reason string) {
 	if s.metrics != nil {
-		s.metrics.QueryErrors.WithLabelValues(errorReason(err)).Inc()
+		s.metrics.QueryErrors.WithLabelValues(reason).Inc()
 	}
 }
 

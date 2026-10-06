@@ -19,59 +19,75 @@ package prometheus
 import (
 	"fmt"
 	"math"
+	"strconv"
 
 	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
 )
 
-// decodeSingle validates and decodes a Prometheus query response that is
-// expected to collapse to at most one unlabeled series (every query this
-// package renders wraps its outermost aggregation without a `by()` clause,
-// so a well-formed backend never returns more than one item).
+// targetValues holds one decoded batch query's value per target position;
+// a missing entry means that target's expression returned no series.
+type targetValues map[int]float64
+
+func (v targetValues) get(j int) (float64, bool) {
+	value, ok := v[j]
+
+	return value, ok
+}
+
+// decodeByTarget validates and decodes a batch query response (renderBatch)
+// into one value per target position in [0, n).
 //
-// It returns (0, false, nil) for a genuinely empty result (the query found
-// no matching data — an absent signal, not an error), (value, true, nil)
-// for exactly one finite sample, and a non-nil error — wrapping ErrBackend
-// — for protocol errors, warnings/partial data, unexpected result types,
-// duplicate identities (more than one series), or non-finite values
-// (design.md §8).
-func decodeSingle(value model.Value, warnings promv1.Warnings, err error) (float64, bool, error) {
+// A target with no series is simply missing (an absent signal, not an
+// error). It returns a non-nil error — wrapping ErrBackend — for protocol
+// errors, warnings/partial data, unexpected result types, a series without
+// a valid target label, duplicate series for one target, or non-finite
+// values (design.md §8).
+func decodeByTarget(value model.Value, warnings promv1.Warnings, err error, n int) (targetValues, error) {
 	if err != nil {
-		return 0, false, fmt.Errorf("%w: %v", ErrBackend, err)
+		return nil, fmt.Errorf("%w: %v", ErrBackend, err)
 	}
 	if len(warnings) > 0 {
-		return 0, false, fmt.Errorf("%w: warnings: %v", ErrBackend, []string(warnings))
+		return nil, fmt.Errorf("%w: warnings: %v", ErrBackend, []string(warnings))
 	}
 
 	vector, ok := value.(model.Vector)
 	if !ok {
-		return 0, false, fmt.Errorf("%w: expected a vector result, got %T", ErrBackend, value)
+		return nil, fmt.Errorf("%w: expected a vector result, got %T", ErrBackend, value)
 	}
 
-	switch len(vector) {
-	case 0:
-		return 0, false, nil
-	case 1:
-		v := float64(vector[0].Value)
+	values := make(targetValues, len(vector))
+	for _, sample := range vector {
+		label := string(sample.Metric[targetLabel])
+
+		j, err := strconv.Atoi(label)
+		if err != nil || j < 0 || j >= n {
+			return nil, fmt.Errorf("%w: series with unexpected %s=%q", ErrBackend, targetLabel, label)
+		}
+		if _, dup := values[j]; dup {
+			return nil, fmt.Errorf("%w: more than one series for target %d (duplicate identities?)", ErrBackend, j)
+		}
+
+		v := float64(sample.Value)
 		if math.IsNaN(v) {
 			// Prometheus renders a filtered-out comparison as an absent
 			// series, not NaN, so a literal NaN here is a genuine
 			// anomaly, not "no data".
-			return 0, false, fmt.Errorf("%w: NaN value", ErrBackend)
+			return nil, fmt.Errorf("%w: NaN value", ErrBackend)
 		}
 		if math.IsInf(v, 0) {
-			return 0, false, fmt.Errorf("%w: non-finite (Inf) value", ErrBackend)
+			return nil, fmt.Errorf("%w: non-finite (Inf) value", ErrBackend)
 		}
 
-		return v, true, nil
-	default:
-		return 0, false, fmt.Errorf("%w: expected exactly one series, got %d (duplicate identities?)", ErrBackend, len(vector))
+		values[j] = v
 	}
+
+	return values, nil
 }
 
 // resultCount reports how many series/samples value carries, for logging
-// (metric-gateway.md §8: a well-formed query never returns more than one,
-// so a larger count is itself a useful diagnostic — see decodeSingle).
+// (a well-formed batch query returns at most one per target — see
+// decodeByTarget).
 func resultCount(value model.Value) int {
 	switch v := value.(type) {
 	case model.Vector:

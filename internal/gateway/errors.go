@@ -19,6 +19,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/sergelogvinov/kubernetes-custom-metrics/internal/resolver"
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/cache"
@@ -28,34 +29,84 @@ import (
 	"sigs.k8s.io/custom-metrics-apiserver/pkg/provider"
 )
 
-// This file maps every internal failure this package owns to the exact
+// This file is the gateway's one error seam: Service passes every internal
+// failure through untouched, and classify maps it once — at the end of
+// Service.Get — to both its bounded telemetry reason and the exact
 // Kubernetes Status/HTTP code from metric-gateway.md §3.6. 401/403 are
 // handled upstream by AdapterBase's delegated authentication/authorization
 // (T1) and never reach this code.
 
-// errorReason classifies err for the bounded-cardinality
-// gateway_query_errors_total{reason} metric (design.md §6 step 10: never
-// label with unbounded caller-supplied content).
-func errorReason(err error) string {
+// metricSelectorError rejects a nonempty metricLabelSelector, unsupported
+// in v1 (metric-gateway.md §3.6).
+type metricSelectorError struct{}
+
+func (metricSelectorError) Error() string {
+	return "metricLabelSelector is not supported in v1"
+}
+
+// metricNotSupportedError reports an unknown metric name or an unsupported
+// metric/resource combination (metric-gateway.md §2, §3.6).
+type metricNotSupportedError struct {
+	req Request
+}
+
+func (e *metricNotSupportedError) Error() string {
+	return fmt.Sprintf("metric %s is not supported for %s", e.req.Metric, e.req.GroupResource)
+}
+
+// notEligibleError reports a named object with no eligible retained
+// members, or verified inactivity throughout the window
+// (metric-gateway.md §3.6).
+type notEligibleError struct {
+	req Request
+}
+
+func (e *notEligibleError) Error() string {
+	return fmt.Sprintf("no eligible members for %s %s/%s", e.req.GroupResource, e.req.Namespace, e.req.Name)
+}
+
+// classify maps err to its gateway_query_errors_total{reason} label
+// (bounded: never caller-supplied content, design.md §6 step 10) and the
+// Status error returned to the caller.
+//
+// Order matters: a backend timeout wraps both prometheus.ErrBackend and
+// context.DeadlineExceeded, and must surface as 504, not 503.
+func classify(err error) (string, error) {
+	if notFound, ok := errors.AsType[*resolver.NotFoundError](err); ok {
+		return "not-found", resolverNotFoundStatus(notFound)
+	}
+	if e, ok := errors.AsType[*metricNotSupportedError](err); ok {
+		return "metric-not-supported", provider.NewMetricNotFoundError(e.req.GroupResource, e.req.Metric)
+	}
+	if e, ok := errors.AsType[*notEligibleError](err); ok {
+		return "not-eligible", provider.NewMetricNotFoundForError(e.req.GroupResource, e.req.Metric, e.req.Name)
+	}
+
 	switch {
-	case isType[*resolver.NotFoundError](err):
-		return "not-found"
+	case isType[metricSelectorError](err):
+		return "bad-request", apierrors.NewBadRequest(err.Error())
 	case isType[*resolver.ForbiddenError](err):
-		return "service-account-forbidden"
-	case errors.Is(err, context.DeadlineExceeded):
-		return "deadline-exceeded"
-	case errors.Is(err, prometheus.ErrQueryTooLarge):
-		return "query-too-large"
-	case errors.Is(err, prometheus.ErrIncompleteCoverage):
-		return "incomplete-coverage"
-	case errors.Is(err, prometheus.ErrStaleData):
-		return "stale-data"
-	case errors.Is(err, prometheus.ErrBackend):
-		return "backend"
+		// The gateway's own ServiceAccount lacking permission is a 503, a
+		// distinct failure class from a caller's delegated 403 (design.md §7).
+		return "service-account-forbidden", apierrors.NewServiceUnavailable(err.Error())
 	case isType[*cache.AdmissionRejectedError](err):
-		return "admission-rejected"
+		return "admission-rejected", apierrors.NewTooManyRequests(err.Error(), int(cache.RetryAfter.Seconds()))
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline-exceeded", apierrors.NewTimeoutError(err.Error(), 1)
+	case errors.Is(err, context.Canceled):
+		return "canceled", apierrors.NewServiceUnavailable(err.Error())
+	case errors.Is(err, prometheus.ErrQueryTooLarge):
+		return "query-too-large", apierrors.NewRequestEntityTooLargeError(err.Error())
+	case errors.Is(err, prometheus.ErrIncompleteCoverage):
+		return "incomplete-coverage", apierrors.NewServiceUnavailable(err.Error())
+	case errors.Is(err, prometheus.ErrStaleData):
+		return "stale-data", apierrors.NewServiceUnavailable(err.Error())
+	case errors.Is(err, prometheus.ErrBackend):
+		return "backend", apierrors.NewServiceUnavailable(err.Error())
 	default:
-		return "internal"
+		// Any other resolver or backend failure is still a service
+		// configuration/availability problem, never the caller's fault.
+		return "internal", apierrors.NewServiceUnavailable(err.Error())
 	}
 }
 
@@ -65,88 +116,18 @@ func isType[E error](err error) bool {
 	return ok
 }
 
-// mapResolverError maps an internal/resolver error to the caller's status
-// code (design.md §7: ForbiddenError — the gateway's own ServiceAccount
-// lacking permission — is a 503, a distinct failure class from a caller's
-// delegated-authorization 403).
-func mapResolverError(err error) error {
-	if notFound, ok := errors.AsType[*resolver.NotFoundError](err); ok {
-		if notFound.Kind == resolver.KindCronJob {
-			// metric-gateway.md §3.4 mandates this exact message; the
-			// provider package's constructors cannot produce it, so this
-			// is the one place this package hand-builds a Status.
-			return &apierrors.StatusError{ErrStatus: metav1.Status{
-				Status:  metav1.StatusFailure,
-				Code:    404,
-				Reason:  metav1.StatusReasonNotFound,
-				Message: notFound.Error(),
-			}}
-		}
-
-		return notFoundError(notFound)
-	}
-
-	if forbidden, ok := errors.AsType[*resolver.ForbiddenError](err); ok {
-		return apierrors.NewServiceUnavailable(forbidden.Error())
-	}
-
-	if errors.Is(err, context.DeadlineExceeded) {
-		return apierrors.NewTimeoutError(err.Error(), 1)
-	}
-
-	return apierrors.NewServiceUnavailable(err.Error())
-}
-
-// notFoundError renders a generic (non-CronJob) resolver not-found using
-// the exact message resolver already computed (e.g. a real Kubernetes
-// NotFound message), which is more specific than any fixed provider
-// template — still shaped exactly like provider.NewMetricNotFoundForError.
-func notFoundError(notFound *resolver.NotFoundError) error {
+// resolverNotFoundStatus renders a resolver not-found using the exact
+// message resolver already computed (e.g. a real Kubernetes NotFound
+// message), which is more specific than any fixed provider template —
+// still shaped exactly like provider.NewMetricNotFoundForError.
+// metric-gateway.md §3.4 mandates the CronJob message verbatim, which the
+// provider package's constructors cannot produce, so this is the one place
+// this package hand-builds a Status.
+func resolverNotFoundStatus(notFound *resolver.NotFoundError) error {
 	return &apierrors.StatusError{ErrStatus: metav1.Status{
 		Status:  metav1.StatusFailure,
 		Code:    404,
 		Reason:  metav1.StatusReasonNotFound,
 		Message: notFound.Error(),
 	}}
-}
-
-// mapQuerierError maps a pkg/prometheus error to the caller's status
-// code (metric-gateway.md §3.6).
-func mapQuerierError(err error) error {
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		return apierrors.NewTimeoutError(err.Error(), 1)
-	case errors.Is(err, prometheus.ErrQueryTooLarge):
-		return apierrors.NewRequestEntityTooLargeError(err.Error())
-	default:
-		// ErrIncompleteCoverage, ErrStaleData, ErrBackend, ErrEmptySelection,
-		// and anything else this package does not specifically recognize
-		// are all backend/protocol failures — 503.
-		return apierrors.NewServiceUnavailable(err.Error())
-	}
-}
-
-// mapAdmissionError maps a *cache.AdmissionRejectedError to 429 with the
-// spec's fixed Retry-After (metric-gateway.md §6.3).
-func mapAdmissionError(err error) error {
-	if _, ok := errors.AsType[*cache.AdmissionRejectedError](err); ok { //nolint:errcheck
-		return apierrors.NewTooManyRequests(err.Error(), int(cache.RetryAfter.Seconds()))
-	}
-
-	return apierrors.NewServiceUnavailable(err.Error())
-}
-
-// metricNotSupportedError reports an unknown or unsupported metric/resource
-// combination (metric-gateway.md §2, §3.6) using the recommended provider
-// constructor.
-func metricNotSupportedError(req Request) error {
-	return provider.NewMetricNotFoundError(req.GroupResource, req.Metric)
-}
-
-// namedObjectNotEligibleError reports a named object with no eligible
-// retained members or verified inactivity throughout the window, or a
-// named object that itself does not exist and was not already turned into
-// a *resolver.NotFoundError (metric-gateway.md §3.6).
-func namedObjectNotEligibleError(req Request) error {
-	return provider.NewMetricNotFoundForError(req.GroupResource, req.Metric, req.Name)
 }

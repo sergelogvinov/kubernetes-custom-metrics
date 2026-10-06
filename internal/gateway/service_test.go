@@ -32,7 +32,6 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	clocktesting "k8s.io/utils/clock/testing"
 )
 
 const testCatalogYAML = `
@@ -94,42 +93,59 @@ func (f *fakeResolver) Resolve(_ context.Context, target resolver.Target) ([]res
 	return f.resolutions, f.err
 }
 
-// fakeQuerier is a lightweight stand-in for pkg/prometheus.Querier.
-type fakeQuerier struct {
-	mu      sync.Mutex
-	result  prometheus.Result
-	ok      bool
-	err     error
-	calls   atomic.Int32
-	lastReq prometheus.Request
-	reqs    []prometheus.Request
+// evalTime is the evaluation time fakeEvaluator reports.
+var evalTime = time.Unix(1_700_000_000, 0)
+
+// fakeEvaluator is a lightweight stand-in for *prometheus.Client. Each
+// target gets sample, or fn(target) when fn is set.
+type fakeEvaluator struct {
+	mu       sync.Mutex
+	sample   prometheus.Sample
+	fn       func(prometheus.Target) prometheus.Sample
+	err      error
+	calls    atomic.Int32
+	lastComp prometheus.Computation
 }
 
-func (f *fakeQuerier) Query(_ context.Context, req prometheus.Request) (prometheus.Result, bool, error) {
+func (f *fakeEvaluator) Evaluate(_ context.Context, comp prometheus.Computation) (prometheus.Evaluation, error) {
 	f.calls.Add(1)
 	f.mu.Lock()
-	f.lastReq = req
-	f.reqs = append(f.reqs, req)
+	f.lastComp = comp
 	f.mu.Unlock()
 
-	return f.result, f.ok, f.err
+	if f.err != nil {
+		return prometheus.Evaluation{}, f.err
+	}
+
+	samples := make([]prometheus.Sample, len(comp.Targets))
+	for i, target := range comp.Targets {
+		if f.fn != nil {
+			samples[i] = f.fn(target)
+		} else {
+			samples[i] = f.sample
+		}
+	}
+
+	return prometheus.Evaluation{Time: evalTime, Samples: samples}, nil
 }
 
-func newTestService(t *testing.T, cat *catalog.Catalog, res Resolver, q Querier) *Service {
+func present(v float64) prometheus.Sample {
+	return prometheus.Sample{Value: v, Present: true}
+}
+
+func newTestService(t *testing.T, cat *catalog.Catalog, res Resolver, ev Evaluator) *Service {
 	t.Helper()
 
 	return NewService(Deps{
 		Catalog:       cat,
-		Cluster:       "test",
 		Resolver:      res,
-		Querier:       q,
+		Evaluator:     ev,
 		Cache:         cache.New(100, 1<<20, sizeOfResult),
 		Flights:       cache.NewGroup[Result](context.Background(), time.Minute),
 		Inflight:      cache.NewLimiter("inflight-requests", 128),
 		Computations:  cache.NewLimiter("shared-computations", 32),
 		CacheTTLShort: 15 * time.Second,
 		CacheTTLLong:  10 * time.Minute,
-		Clock:         clocktesting.NewFakeClock(time.Unix(1_700_000_000, 0)),
 	})
 }
 
@@ -167,7 +183,7 @@ func statusCode(t *testing.T, err error) int32 {
 
 func TestService_Get_NamedHit(t *testing.T) {
 	res := &fakeResolver{resolutions: []resolver.Resolution{podResolution("web-0", "uid-web-0")}}
-	q := &fakeQuerier{result: prometheus.Result{Value: 1.5, Timestamp: time.Unix(1_700_000_000, 0)}, ok: true}
+	q := &fakeEvaluator{sample: present(1.5)}
 	svc := newTestService(t, testCatalog(t), res, q)
 
 	result, err := svc.Get(context.Background(), podRequest("web-0"))
@@ -188,19 +204,21 @@ func TestService_Get_NamedHit(t *testing.T) {
 		t.Errorf("item.MetricName = %q", item.MetricName)
 	}
 
-	// Query request must carry the resolved pod name, catalog
-	// series/aggregation, and the parsed stat/window.
-	if q.lastReq.Series != "pod_cpu_usage_cores" {
-		t.Errorf("Series = %q", q.lastReq.Series)
+	if !item.Timestamp.Equal(evalTime) {
+		t.Errorf("item.Timestamp = %s, want the evaluation time %s", item.Timestamp, evalTime)
 	}
-	if q.lastReq.Aggregation != prometheus.AggregationSumThenStat {
-		t.Errorf("Aggregation = %q", q.lastReq.Aggregation)
+
+	// The computation must carry the catalog base, the parsed stat/window
+	// and the resolved pod names.
+	comp := q.lastComp
+	if comp.Base.Series != "pod_cpu_usage_cores" || comp.Base.Aggregation != catalog.AggregationSumThenStat {
+		t.Errorf("Base = %+v", comp.Base)
 	}
-	if q.lastReq.Stat != prometheus.StatAvg || q.lastReq.Window != 5*time.Minute {
-		t.Errorf("Stat/Window = %s/%s", q.lastReq.Stat, q.lastReq.Window)
+	if comp.Stat != catalog.StatAvg || comp.Window != 5*time.Minute || comp.Namespace != "prod" {
+		t.Errorf("Stat/Window/Namespace = %s/%s/%s", comp.Stat, comp.Window, comp.Namespace)
 	}
-	if len(q.lastReq.Names) != 1 || q.lastReq.Names[0] != "web-0" {
-		t.Errorf("Names = %v", q.lastReq.Names)
+	if len(comp.Targets) != 1 || comp.Targets[0].Name != "web-0" || len(comp.Targets[0].Pods) != 1 || comp.Targets[0].Pods[0] != "web-0" {
+		t.Errorf("Targets = %+v", comp.Targets)
 	}
 }
 
@@ -212,7 +230,7 @@ func TestService_Get_ServesNamesDiscoveryDoesNotAdvertise(t *testing.T) {
 		for _, metric := range []string{"cpu_p95_1h", "memory_max_26m"} {
 			t.Run(string(mode)+"/"+metric, func(t *testing.T) {
 				res := &fakeResolver{resolutions: []resolver.Resolution{podResolution("web-0", "uid-web-0")}}
-				q := &fakeQuerier{result: prometheus.Result{Value: 1.5, Timestamp: time.Unix(1_700_000_000, 0)}, ok: true}
+				q := &fakeEvaluator{sample: present(1.5)}
 				svc := newTestService(t, testCatalogWithDiscovery(t, mode), res, q)
 
 				req := podRequest("web-0")
@@ -229,11 +247,11 @@ func TestService_Get_ServesNamesDiscoveryDoesNotAdvertise(t *testing.T) {
 	}
 }
 
-func TestService_Get_NodeScopeQueriesOwnName(t *testing.T) {
+func TestService_Get_NodeTargetCarriesNodeName(t *testing.T) {
 	res := &fakeResolver{resolutions: []resolver.Resolution{
 		{Object: resolver.ObjectRef{Name: "worker-1", UID: "uid-worker-1"}},
 	}}
-	q := &fakeQuerier{result: prometheus.Result{Value: 2.0}, ok: true}
+	q := &fakeEvaluator{sample: present(2.0)}
 	svc := newTestService(t, testCatalog(t), res, q)
 
 	req := Request{
@@ -252,17 +270,17 @@ func TestService_Get_NodeScopeQueriesOwnName(t *testing.T) {
 	if len(result.Items) != 1 || result.Items[0].Kind != "Node" {
 		t.Fatalf("result = %+v", result)
 	}
-	if len(q.lastReq.Names) != 1 || q.lastReq.Names[0] != "worker-1" {
-		t.Errorf("Names = %v, want [worker-1] (the node's own name)", q.lastReq.Names)
+	if len(q.lastComp.Targets) != 1 || q.lastComp.Targets[0].Name != "worker-1" {
+		t.Errorf("Targets = %+v, want one target named worker-1", q.lastComp.Targets)
 	}
-	if q.lastReq.Scope != prometheus.ScopeNode {
-		t.Errorf("Scope = %q, want node", q.lastReq.Scope)
+	if q.lastComp.Base.Scope != catalog.ScopeNode {
+		t.Errorf("Scope = %q, want node", q.lastComp.Base.Scope)
 	}
 }
 
 func TestService_Get_StatThenSumAggregationWired(t *testing.T) {
 	res := &fakeResolver{resolutions: []resolver.Resolution{podResolution("web-0", "uid-web-0")}}
-	q := &fakeQuerier{result: prometheus.Result{Value: 1}, ok: true}
+	q := &fakeEvaluator{sample: present(1)}
 	svc := newTestService(t, testCatalog(t), res, q)
 
 	req := podRequest("web-0")
@@ -271,17 +289,17 @@ func TestService_Get_StatThenSumAggregationWired(t *testing.T) {
 	if _, err := svc.Get(context.Background(), req); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if q.lastReq.Aggregation != prometheus.AggregationStatThenSum {
-		t.Errorf("Aggregation = %q, want stat-then-sum (memory base)", q.lastReq.Aggregation)
+	if q.lastComp.Base.Aggregation != catalog.AggregationStatThenSum {
+		t.Errorf("Aggregation = %q, want stat-then-sum (memory base)", q.lastComp.Base.Aggregation)
 	}
-	if q.lastReq.Quantity != prometheus.QuantityMemory {
-		t.Errorf("Quantity = %q, want memory", q.lastReq.Quantity)
+	if q.lastComp.Base.Unit != catalog.UnitBytes {
+		t.Errorf("Unit = %q, want bytes", q.lastComp.Base.Unit)
 	}
 }
 
 func TestService_Get_WildcardReturnsSortedItemsAndCachesEmptyList(t *testing.T) {
 	res := &fakeResolver{resolutions: nil}
-	q := &fakeQuerier{}
+	q := &fakeEvaluator{}
 	svc := newTestService(t, testCatalog(t), res, q)
 
 	req := podRequest("")
@@ -311,14 +329,12 @@ func TestService_Get_WildcardOmitsAbsentItems(t *testing.T) {
 		podResolution("web-1", "uid-web-1"),
 	}}
 
-	calls := 0
-	q := &countingQuerier{fn: func(req prometheus.Request) (prometheus.Result, bool, error) {
-		calls++
-		if req.Names[0] == "web-0" {
-			return prometheus.Result{}, false, nil // absent
+	q := &fakeEvaluator{fn: func(target prometheus.Target) prometheus.Sample {
+		if target.Name == "web-0" {
+			return prometheus.Sample{} // absent
 		}
 
-		return prometheus.Result{Value: 5}, true, nil
+		return present(5)
 	}}
 	svc := newTestService(t, testCatalog(t), res, q)
 
@@ -332,20 +348,15 @@ func TestService_Get_WildcardOmitsAbsentItems(t *testing.T) {
 	if len(result.Items) != 1 || result.Items[0].Name != "web-1" {
 		t.Fatalf("result.Items = %+v, want only web-1", result.Items)
 	}
-}
-
-type countingQuerier struct {
-	fn func(prometheus.Request) (prometheus.Result, bool, error)
-}
-
-func (c *countingQuerier) Query(_ context.Context, req prometheus.Request) (prometheus.Result, bool, error) {
-	return c.fn(req)
+	if got := q.calls.Load(); got != 1 {
+		t.Errorf("evaluator called %d times, want 1 (one computation for every target)", got)
+	}
 }
 
 // --- error mapping (metric-gateway.md §3.6) --------------------------
 
 func TestService_Get_MetricSelectorNonempty400(t *testing.T) {
-	svc := newTestService(t, testCatalog(t), &fakeResolver{}, &fakeQuerier{})
+	svc := newTestService(t, testCatalog(t), &fakeResolver{}, &fakeEvaluator{})
 
 	sel, err := labels.Parse("app=web")
 	if err != nil {
@@ -361,7 +372,7 @@ func TestService_Get_MetricSelectorNonempty400(t *testing.T) {
 }
 
 func TestService_Get_UnknownMetric404(t *testing.T) {
-	svc := newTestService(t, testCatalog(t), &fakeResolver{}, &fakeQuerier{})
+	svc := newTestService(t, testCatalog(t), &fakeResolver{}, &fakeEvaluator{})
 
 	req := podRequest("web-0")
 	req.Metric = "does_not_exist_avg_5m"
@@ -373,7 +384,7 @@ func TestService_Get_UnknownMetric404(t *testing.T) {
 }
 
 func TestService_Get_ScopeMismatch404(t *testing.T) {
-	svc := newTestService(t, testCatalog(t), &fakeResolver{}, &fakeQuerier{})
+	svc := newTestService(t, testCatalog(t), &fakeResolver{}, &fakeEvaluator{})
 
 	// node_cpu is node-scoped; requesting it against a Pod is unsupported.
 	req := podRequest("web-0")
@@ -387,7 +398,7 @@ func TestService_Get_ScopeMismatch404(t *testing.T) {
 
 func TestService_Get_NamedObjectNotFound404(t *testing.T) {
 	res := &fakeResolver{err: &resolver.NotFoundError{Kind: resolver.KindPod, Namespace: "prod", Name: "web-0", Message: `pods "web-0" not found`}}
-	svc := newTestService(t, testCatalog(t), res, &fakeQuerier{})
+	svc := newTestService(t, testCatalog(t), res, &fakeEvaluator{})
 
 	_, err := svc.Get(context.Background(), podRequest("web-0"))
 	if got := statusCode(t, err); got != 404 {
@@ -398,7 +409,7 @@ func TestService_Get_NamedObjectNotFound404(t *testing.T) {
 func TestService_Get_CronJobNotFoundPreservesExactMessage(t *testing.T) {
 	message := "no active or recent (24h) Jobs for CronJob prod/nightly-batch"
 	res := &fakeResolver{err: &resolver.NotFoundError{Kind: resolver.KindCronJob, Namespace: "prod", Name: "nightly-batch", Message: message}}
-	svc := newTestService(t, testCatalog(t), res, &fakeQuerier{})
+	svc := newTestService(t, testCatalog(t), res, &fakeEvaluator{})
 
 	req := podRequest("nightly-batch")
 	req.GroupResource = schema.GroupResource{Group: "batch", Resource: "cronjobs"}
@@ -416,7 +427,7 @@ func TestService_Get_CronJobNotFoundPreservesExactMessage(t *testing.T) {
 
 func TestService_Get_NoEligibleMembersNamed404(t *testing.T) {
 	res := &fakeResolver{resolutions: []resolver.Resolution{podResolution("web-0", "uid-web-0")}}
-	q := &fakeQuerier{ok: false} // absent
+	q := &fakeEvaluator{} // absent
 	svc := newTestService(t, testCatalog(t), res, q)
 
 	_, err := svc.Get(context.Background(), podRequest("web-0"))
@@ -429,7 +440,7 @@ func TestService_Get_ZeroPodNamesNamed404(t *testing.T) {
 	res := &fakeResolver{resolutions: []resolver.Resolution{
 		{Object: resolver.ObjectRef{Namespace: "prod", Name: "web", UID: "uid-deploy"}, PodNames: nil},
 	}}
-	svc := newTestService(t, testCatalog(t), res, &fakeQuerier{})
+	svc := newTestService(t, testCatalog(t), res, &fakeEvaluator{})
 
 	req := podRequest("web")
 	req.GroupResource = schema.GroupResource{Group: "apps", Resource: "deployments"}
@@ -442,7 +453,7 @@ func TestService_Get_ZeroPodNamesNamed404(t *testing.T) {
 
 func TestService_Get_ServiceAccountForbidden503(t *testing.T) {
 	res := &fakeResolver{err: &resolver.ForbiddenError{Kind: resolver.KindPod, Namespace: "prod", Name: "web-0", Err: errors.New("RBAC denied")}}
-	svc := newTestService(t, testCatalog(t), res, &fakeQuerier{})
+	svc := newTestService(t, testCatalog(t), res, &fakeEvaluator{})
 
 	_, err := svc.Get(context.Background(), podRequest("web-0"))
 	if got := statusCode(t, err); got != 503 {
@@ -452,7 +463,7 @@ func TestService_Get_ServiceAccountForbidden503(t *testing.T) {
 
 func TestService_Get_IncompleteCoverage503(t *testing.T) {
 	res := &fakeResolver{resolutions: []resolver.Resolution{podResolution("web-0", "uid-web-0")}}
-	q := &fakeQuerier{err: prometheus.ErrIncompleteCoverage}
+	q := &fakeEvaluator{err: prometheus.ErrIncompleteCoverage}
 	svc := newTestService(t, testCatalog(t), res, q)
 
 	_, err := svc.Get(context.Background(), podRequest("web-0"))
@@ -463,7 +474,7 @@ func TestService_Get_IncompleteCoverage503(t *testing.T) {
 
 func TestService_Get_QueryTooLarge413(t *testing.T) {
 	res := &fakeResolver{resolutions: []resolver.Resolution{podResolution("web-0", "uid-web-0")}}
-	q := &fakeQuerier{err: prometheus.ErrQueryTooLarge}
+	q := &fakeEvaluator{err: prometheus.ErrQueryTooLarge}
 	svc := newTestService(t, testCatalog(t), res, q)
 
 	_, err := svc.Get(context.Background(), podRequest("web-0"))
@@ -474,7 +485,7 @@ func TestService_Get_QueryTooLarge413(t *testing.T) {
 
 func TestService_Get_DeadlineExceeded504(t *testing.T) {
 	res := &fakeResolver{resolutions: []resolver.Resolution{podResolution("web-0", "uid-web-0")}}
-	q := &fakeQuerier{err: context.DeadlineExceeded}
+	q := &fakeEvaluator{err: context.DeadlineExceeded}
 	svc := newTestService(t, testCatalog(t), res, q)
 
 	_, err := svc.Get(context.Background(), podRequest("web-0"))
@@ -485,14 +496,14 @@ func TestService_Get_DeadlineExceeded504(t *testing.T) {
 
 func TestService_Get_ResolverForbidden_DoesNotQuery(t *testing.T) {
 	res := &fakeResolver{err: &resolver.ForbiddenError{Kind: resolver.KindPod, Err: errors.New("x")}}
-	q := &fakeQuerier{}
+	q := &fakeEvaluator{}
 	svc := newTestService(t, testCatalog(t), res, q)
 
 	if _, err := svc.Get(context.Background(), podRequest("web-0")); err == nil {
 		t.Fatal("expected an error")
 	}
 	if q.calls.Load() != 0 {
-		t.Error("querier was called despite a resolver failure")
+		t.Error("evaluator was called despite a resolver failure")
 	}
 }
 
@@ -501,24 +512,22 @@ func TestService_Get_ResolverForbidden_DoesNotQuery(t *testing.T) {
 func TestService_Get_InflightAdmissionRejected429(t *testing.T) {
 	res := &fakeResolver{resolutions: []resolver.Resolution{podResolution("web-0", "uid-web-0")}}
 	block := make(chan struct{})
-	q := &countingQuerier{fn: func(prometheus.Request) (prometheus.Result, bool, error) {
+	q := &fakeEvaluator{fn: func(prometheus.Target) prometheus.Sample {
 		<-block
 
-		return prometheus.Result{Value: 1}, true, nil
+		return present(1)
 	}}
 
 	svc := NewService(Deps{
 		Catalog:       testCatalog(t),
-		Cluster:       "test",
 		Resolver:      res,
-		Querier:       q,
+		Evaluator:     q,
 		Cache:         cache.New(100, 1<<20, sizeOfResult),
 		Flights:       cache.NewGroup[Result](context.Background(), time.Minute),
 		Inflight:      cache.NewLimiter("inflight-requests", 1),
 		Computations:  cache.NewLimiter("shared-computations", 32),
 		CacheTTLShort: 15 * time.Second,
 		CacheTTLLong:  10 * time.Minute,
-		Clock:         clocktesting.NewFakeClock(time.Unix(1_700_000_000, 0)),
 	})
 
 	// Two DIFFERENT named objects so the second doesn't just join the
@@ -548,10 +557,10 @@ func TestService_Get_InflightAdmissionRejected429(t *testing.T) {
 func TestService_Get_ConcurrentIdenticalRequestsCollapse(t *testing.T) {
 	res := &fakeResolver{resolutions: []resolver.Resolution{podResolution("web-0", "uid-web-0")}}
 	start := make(chan struct{})
-	q := &countingQuerier{fn: func(prometheus.Request) (prometheus.Result, bool, error) {
+	q := &fakeEvaluator{fn: func(prometheus.Target) prometheus.Sample {
 		<-start
 
-		return prometheus.Result{Value: 3}, true, nil
+		return present(3)
 	}}
 	svc := newTestService(t, testCatalog(t), res, q)
 
@@ -588,7 +597,7 @@ func TestService_Get_ConcurrentIdenticalRequestsCollapse(t *testing.T) {
 
 func TestProvider_ListAllMetrics_DelegatesToCatalog(t *testing.T) {
 	cat := testCatalog(t)
-	svc := newTestService(t, cat, &fakeResolver{}, &fakeQuerier{})
+	svc := newTestService(t, cat, &fakeResolver{}, &fakeEvaluator{})
 	p := NewProvider(cat, svc)
 
 	got := p.ListAllMetrics()
