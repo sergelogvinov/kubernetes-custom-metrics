@@ -65,9 +65,9 @@ func (e *notEligibleError) Error() string {
 	return fmt.Sprintf("no eligible members for %s %s/%s", e.req.GroupResource, e.req.Namespace, e.req.Name)
 }
 
-// classify maps err to its gateway_query_errors_total{reason} label
-// (bounded: never caller-supplied content, design.md §6 step 10) and the
-// Status error returned to the caller.
+// classify maps err to its gateway_query_errors_total{reason} label (a
+// fixed word, never text from the caller) and to the Status error returned
+// to the caller.
 //
 // Order matters: a backend timeout wraps both prometheus.ErrBackend and
 // context.DeadlineExceeded, and must surface as 504, not 503.
@@ -86,8 +86,8 @@ func classify(err error) (string, error) {
 	case isType[metricSelectorError](err):
 		return "bad-request", apierrors.NewBadRequest(err.Error())
 	case isType[*resolver.ForbiddenError](err):
-		// The gateway's own ServiceAccount lacking permission is a 503, a
-		// distinct failure class from a caller's delegated 403 (design.md §7).
+		// The gateway's own ServiceAccount has no permission: this is 503,
+		// different from a 403 for a caller who may not read the metric.
 		return "service-account-forbidden", apierrors.NewServiceUnavailable(err.Error())
 	case isType[*cache.AdmissionRejectedError](err):
 		return "admission-rejected", apierrors.NewTooManyRequests(err.Error(), int(cache.RetryAfter.Seconds()))

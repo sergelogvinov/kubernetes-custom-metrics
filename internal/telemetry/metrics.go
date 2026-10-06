@@ -14,10 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package telemetry defines the gateway's Prometheus self-metrics
-// (metric-gateway.md §4 "Cache Metrics") and registers them into
-// generic-apiserver's own /metrics registry, so there is one metrics
-// stack, not two (design.md §10).
+// Package telemetry defines the gateway's own Prometheus metrics
+// (metric-gateway.md §4 "Cache Metrics"). It registers them in the
+// generic-apiserver /metrics registry, so the server has only one /metrics
+// endpoint.
 package telemetry
 
 import (
@@ -25,10 +25,9 @@ import (
 	"k8s.io/component-base/metrics/legacyregistry"
 )
 
-// Metrics holds every gateway self-metric. Labels are always drawn from a
-// bounded, pre-validated set — a resolver.Kind name or a catalog-validated
-// metric name — never namespace, object name, selector, or caller identity
-// (design.md §6 step 10).
+// Metrics holds every gateway self-metric. Labels always come from a small,
+// known set — a resolver.Kind name or a catalog-validated metric name —
+// never a namespace, object name, selector, or caller identity.
 type Metrics struct {
 	CacheHits             *metrics.CounterVec
 	CacheMisses           *metrics.CounterVec

@@ -324,7 +324,7 @@ func TestResolveCronJob_UnrelatedJobIgnored(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "nightly", UID: types.UID("uid-cronjob")},
 	}
 	// Same name prefix, but owned by a different CronJob UID: ownership must
-	// be checked by UID, not name (design.md §7).
+	// be checked by UID, not name.
 	unrelated := ownedJob("prod", "nightly-999", "uid-job-unrelated", "uid-other-cronjob", batchv1.JobStatus{Active: 1})
 
 	client := newFakeClient(cronJob, unrelated)

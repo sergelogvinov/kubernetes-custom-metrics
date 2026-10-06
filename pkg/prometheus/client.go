@@ -169,10 +169,8 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}, nil
 }
 
-// Ping performs a bounded reachability check against the backend, for use
-// as a readiness probe (design.md §10: "a bounded Prometheus reachability
-// check"). It only checks that the backend responds, not that any
-// particular query is well-formed.
+// Ping checks, with a timeout, that the backend answers. The readiness
+// probe uses it. It does not check that any real query works.
 func (c *Client) Ping(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()

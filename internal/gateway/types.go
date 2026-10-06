@@ -14,14 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package gateway implements the gateway's use-case flow — parse, cache
-// lookup, singleflight, resolve, query, validate, convert, cache store,
-// telemetry (design.md §6) — and
+// Package gateway runs the steps of one metric request — parse, cache
+// lookup, singleflight, resolve, evaluate, convert, cache store, telemetry —
+// and implements
 // sigs.k8s.io/custom-metrics-apiserver/pkg/provider.CustomMetricsProvider
-// directly on top of it. It is unaware of the provider interface's own
-// callers (AdapterBase's REST storage) and of HTTP routing; delegated
-// authentication/authorization has already run by the time any exported
-// method here is invoked (design.md §6, "Request execution order").
+// on top of them. It does not know about HTTP routing. Authentication and
+// authorization have already run before any exported method here is
+// called.
 package gateway
 
 import (
@@ -34,8 +33,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// Request is one provider call translated into the gateway's own,
-// provider-independent shape (design.md §6).
+// Request is one provider call in the gateway's own shape, independent of
+// the provider interface.
 type Request struct {
 	// Verb is "get" for a named lookup or "list" for a wildcard one —
 	// part of the cache key, and otherwise unused.
@@ -51,7 +50,7 @@ type Request struct {
 
 // Item is one resolved object's computed value, carrying enough identity
 // and quantity information for the provider boundary to build a
-// *custom_metrics.MetricValue (design.md §6 step 9).
+// *custom_metrics.MetricValue.
 type Item struct {
 	APIVersion string
 	Kind       string
@@ -74,13 +73,10 @@ type Result struct {
 	Items []Item
 }
 
-// approxItemOverheadBytes is a conservative, deliberately rough per-item
-// accounted size for the response cache's byte budget — Value/Timestamp
-// fields dominate a real MetricValue's encoded size far less than object
-// identity strings and per-entry map/slice overhead, so a fixed
-// per-item constant errs on the side of counting more bytes than the
-// actual encoded response, matching design.md §6's "account ... size
-// conservatively for byte eviction, not only the encoded response size."
+// approxItemOverheadBytes is a rough, deliberately high size per item for
+// the response cache's byte limit. Most of an item's memory is object
+// names and map/slice overhead, not the value itself, so a fixed number
+// that counts more bytes than the real response is the safe choice.
 const approxItemOverheadBytes = 256
 
 // sizeOfResult estimates result's accounted cache size.

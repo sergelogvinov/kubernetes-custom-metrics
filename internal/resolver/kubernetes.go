@@ -83,10 +83,10 @@ func (r *Resolver) listObjects(ctx context.Context, spec kindSpec, kind Kind, na
 	return items, nil
 }
 
-// classifyError maps a raw client-go error to a resolver-typed one: a
-// genuinely missing object maps to *NotFoundError (the caller's 404); the
-// gateway ServiceAccount lacking RBAC maps to *ForbiddenError (the caller's
-// 503, never a caller-facing 403 — design.md §7, metric-gateway.md §3.3).
+// classifyError turns a raw client-go error into a resolver error: a missing
+// object becomes *NotFoundError (404 for the caller); missing RBAC for the
+// gateway ServiceAccount becomes *ForbiddenError (503 for the caller, never
+// 403 — metric-gateway.md §3.3).
 func classifyError(kind Kind, namespace, name string, err error) error {
 	switch {
 	case apierrors.IsNotFound(err):
@@ -110,7 +110,7 @@ func objectRefFrom(obj *unstructured.Unstructured) ObjectRef {
 
 // extractSelector decodes obj's spec.selector into a labels.Selector,
 // honoring matchExpressions as well as matchLabels
-// (metav1.LabelSelectorAsSelector; design.md §7).
+// (metav1.LabelSelectorAsSelector).
 func extractSelector(obj *unstructured.Unstructured) (labels.Selector, error) {
 	raw, found, err := unstructured.NestedMap(obj.Object, "spec", "selector")
 	if err != nil {

@@ -28,7 +28,7 @@ import (
 // that can affect a computed value, and nothing that identifies the
 // caller — endpoint authorization already grants the corresponding data,
 // and resolution always uses the same ServiceAccount regardless of which
-// authorized caller asked (design.md §6 step 2). Every field is a plain
+// authorized caller asked. Every field is a plain
 // comparable value, so Key can be used directly as a Go map key.
 type Key struct {
 	CatalogRevision    string

@@ -35,9 +35,9 @@ import (
 // wedged dependency cannot hang the /readyz handler indefinitely.
 const readinessCheckTimeout = 5 * time.Second
 
-// addReadyzChecks installs the gateway's readiness checks into config,
-// injected via adapter.Config() per design.md §10: catalog loaded, the
-// gateway ServiceAccount can read the cluster, and Prometheus is reachable.
+// addReadyzChecks adds the gateway's readiness checks to config (taken from
+// adapter.Config()): the catalog is loaded, the gateway ServiceAccount can
+// read the cluster, and Prometheus is reachable.
 // Liveness and discovery stay independent of Prometheus availability —
 // only these added readyz checks may depend on it, never /healthz or
 // /livez.

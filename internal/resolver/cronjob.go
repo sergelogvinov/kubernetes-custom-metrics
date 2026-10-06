@@ -93,8 +93,7 @@ func (r *Resolver) resolveCronJobPodNames(ctx context.Context, cronJob *unstruct
 }
 
 // ownedJobs returns the Jobs in jobs whose controller ownerReference UID
-// matches cronJobUID — ownership confirmed by UID, not name alone
-// (design.md §7).
+// matches cronJobUID. Ownership is checked by UID, not by name.
 func ownedJobs(jobs []unstructured.Unstructured, cronJobUID types.UID) []unstructured.Unstructured {
 	var owned []unstructured.Unstructured
 	for i := range jobs {

@@ -34,7 +34,7 @@ import (
 
 // cancelTransport binds each HTTP round trip to the context of the
 // invocation that triggered it. The custom-metrics client's own methods
-// accept no context and use context.TODO() internally (design.md §11.1), so
+// accept no context and use context.TODO() internally, so
 // cancellation has to happen at the transport layer instead. bind/unbind
 // wrap one round trip at a time; Client never issues concurrent calls
 // through the same transport, so a single held context is sufficient.
@@ -69,20 +69,19 @@ func (t *cancelTransport) bind(ctx context.Context) (unbind func()) {
 	}
 }
 
-// Client is ctop's thin lifecycle adapter around the standard custom-metrics
-// client (design.md §11.1 and §11.2's "this local lifecycle adapter is not a
-// competing public metrics client"). It owns kubeconfig loading, the
-// effective default namespace, and per-call cancellation.
+// Client is a small wrapper around the standard custom-metrics client. It
+// is not a new public metrics client. It loads the kubeconfig, finds the
+// default namespace, and cancels each call when the context ends.
 type Client struct {
 	metrics   custom_metrics.CustomMetricsClient
 	transport *cancelTransport
 	namespace string
 }
 
-// NewClient resolves kubeconfig/context configuration and builds the
-// custom-metrics client. KUBECONFIG path-list merging and per-context
-// namespace defaulting stay owned by client-go (design.md §5.2); o.Kubeconfig
-// only becomes an ExplicitPath override when the flag was actually set.
+// NewClient loads the kubeconfig and context, and builds the custom-metrics
+// client. client-go still merges the KUBECONFIG path list and picks the
+// namespace of the context. o.Kubeconfig replaces that path only when the
+// flag was set explicitly.
 func NewClient(o *Options) (*Client, error) {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if o.Kubeconfig != "" {

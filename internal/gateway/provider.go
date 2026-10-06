@@ -31,8 +31,7 @@ import (
 )
 
 // Provider implements provider.CustomMetricsProvider directly on top of
-// Service — there is no adapter layer translating one provider contract
-// into another (design.md §3 rule 2).
+// Service. There is no extra layer between them.
 type Provider struct {
 	catalog *catalog.Catalog
 	service *Service
@@ -101,8 +100,8 @@ func (p *Provider) GetMetricBySelector(
 	return &custom_metrics.MetricValueList{Items: items}, nil
 }
 
-// toMetricValue converts one internal Item into the wire value type
-// (design.md §6 step 9). CPU quantities use DecimalSI, rounded up to
+// toMetricValue converts one internal Item into the API value type.
+// CPU quantities use DecimalSI, rounded up to
 // millicores; memory uses BinarySI, rounded up to whole bytes
 // (metric-gateway.md §3.2) — pkg/prometheus has already rejected
 // negative/non-finite values, so this conversion only ever rounds up.

@@ -46,9 +46,8 @@ func requireBinary(t *testing.T, name string) {
 	}
 }
 
-// TestEvaluate_RealPrometheus covers the
-// plan.md T4 Done-criterion "numeric fixtures against a real Prometheus
-// instance validate at least one aggregation-order distinction end-to-end."
+// TestEvaluate_RealPrometheus checks real numbers against a real Prometheus
+// server, including the difference between the two aggregation orders.
 //
 // It backdates synthetic pod_cpu_usage_cores/pod_active/pod_cpu_complete
 // samples directly into TSDB blocks (via `promtool tsdb

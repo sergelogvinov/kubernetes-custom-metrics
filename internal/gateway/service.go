@@ -29,10 +29,9 @@ import (
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/prometheus"
 )
 
-// Resolver is the narrow surface Service depends on — exactly
-// (*resolver.Resolver).Resolve's signature, so the concrete type satisfies
-// it structurally and service_test.go can use a lightweight fake instead
-// (design.md §3 rule 3).
+// Resolver is the small interface Service needs — exactly
+// (*resolver.Resolver).Resolve's signature, so the real type fits it and
+// service_test.go can use a simple fake instead.
 type Resolver interface {
 	Resolve(ctx context.Context, target resolver.Target) ([]resolver.Resolution, error)
 }
@@ -62,8 +61,8 @@ type Deps struct {
 	Metrics *telemetry.Metrics
 }
 
-// Service implements the gateway's use-case flow independent of the
-// provider interface (design.md §6).
+// Service runs the steps of one metric request, independent of the
+// provider interface.
 type Service struct {
 	catalog   *catalog.Catalog
 	resolver  Resolver
@@ -97,7 +96,7 @@ func NewService(deps Deps) *Service {
 	}
 }
 
-// Get executes the full request path from design.md §6: parse → cache
+// Get runs the full request path: parse → cache
 // lookup → admission/singleflight → resolve → evaluate → build result →
 // cache store → (telemetry throughout). Step 1 (delegated
 // authentication/authorization) has already run in AdapterBase's filter
@@ -168,9 +167,8 @@ func (s *Service) get(ctx context.Context, req Request) (Result, error) {
 
 	// Step 4: bounded singleflight, keyed identically to the cache.
 	result, shared, err := s.flights.Do(ctx, keyString(key), func(flightCtx context.Context) (Result, error) {
-		// Recheck the cache: another flight may have completed and stored
-		// a result between our miss above and entering this closure
-		// (design.md §6 step 4: "recheck the cache").
+		// Check the cache again: another flight may have finished and
+		// stored a result between our miss above and this point.
 		if cached, ok := s.cache.Get(key); ok {
 			return cached, nil
 		}

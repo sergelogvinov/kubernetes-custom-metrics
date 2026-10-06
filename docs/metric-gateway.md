@@ -194,11 +194,11 @@ gateway_cronjob_notfound_total
 
 ## 5. Authorization Model
 
-The gateway is built on [`sigs.k8s.io/custom-metrics-apiserver`](https://github.com/kubernetes-sigs/custom-metrics-apiserver)'s `pkg/cmd.AdapterBase` (see `design.md` §10), the same framework and pattern used by `metrics-server` and `prometheus-adapter`. It uses that framework's standard aggregated-apiserver authentication and authorization, not a bespoke proxy-only mode:
+The gateway is built on [`sigs.k8s.io/custom-metrics-apiserver`](https://github.com/kubernetes-sigs/custom-metrics-apiserver)'s `pkg/cmd.AdapterBase`, the same framework and pattern used by `metrics-server` and `prometheus-adapter`. It uses that framework's standard aggregated-apiserver authentication and authorization, not a bespoke proxy-only mode:
 
 - **Delegated authentication** (`DelegatingAuthenticationOptions`): accepts the aggregation layer's front-proxy request headers (`X-Remote-User`, `X-Remote-Group`, extras), validated against the request-header CA and allowed proxy CNs read from the `extension-apiserver-authentication` ConfigMap, with CA/name rotation. It can also accept a direct bearer token, verified via `TokenReview` against kube-apiserver, for callers that reach the gateway without going through the aggregation proxy (useful for local testing; production traffic goes through kube-apiserver's aggregation layer). `Impersonate-*` headers are not the inbound identity protocol. Fail closed when the trust configuration is unavailable or invalid; do not confuse the serving-certificate CA, the ordinary Kubernetes client CA, and the front-proxy CA.
 - **Delegated authorization** (`DelegatingAuthorizationOptions`): for every request, before the provider is invoked, the gateway issues a `SubjectAccessReview` against kube-apiserver asking whether the authenticated caller may perform the request's verb on the exact `custom.metrics.k8s.io` resource/subresource/namespace/name. **This is the mechanism that enforces "callers do not need `get`/`list` access to the underlying Pods, Nodes or workloads to read their metrics"**: operators grant RBAC on the `custom.metrics.k8s.io` resource and metric subresource specifically (example HPA/user roles in §8), and that grant — not access to the underlying resource — is what the SubjectAccessReview checks. A caller with only custom-metrics RBAC succeeds; a caller with only Pod/workload RBAC and no custom-metrics RBAC is denied `403`, even though the gateway itself reads the same Pods with its own ServiceAccount to compute the answer.
-- The gateway's own ServiceAccount is used **only** for backend object resolution (Pods, Nodes, workloads, Jobs) inside `internal/resolver` and Prometheus queries — never to make the authorization decision above, and never via impersonation. Because the SubjectAccessReview already gated the exact request before the provider runs, and resolution always uses this same ServiceAccount regardless of caller, cached results are valid across callers within the TTL (design.md §6 step 2); caller identity is deliberately excluded from the cache key.
+- The gateway's own ServiceAccount is used **only** for backend object resolution (Pods, Nodes, workloads, Jobs) inside `internal/resolver` and Prometheus queries — never to make the authorization decision above, and never via impersonation. Because the SubjectAccessReview already gated the exact request before the provider runs, and resolution always uses this same ServiceAccount regardless of caller, cached results are valid across callers within the TTL; caller identity is deliberately excluded from the cache key.
 - The exact `/healthz`, `/livez`, and `/readyz` paths are anonymous by default (generic-apiserver's standard behavior) and return no sensitive data; liveness and discovery do not depend on Prometheus availability, only the gateway's added readiness checks do. `/metrics` goes through the same delegated authentication/authorization chain as resource routes — there is no separate monitoring-specific client CA. A Prometheus `ServiceMonitor` or other scraper needs a bearer token bound to a ClusterRole granting `get` on the nonResourceURL `/metrics`, the same pattern used to scrape kube-apiserver or kubelet.
 - No ordinary end-user client-certificate or anonymous fallback is permitted on resource routes; a NetworkPolicy limits access to the control plane as defense in depth but does not replace delegated authentication/authorization.
 
@@ -210,7 +210,7 @@ The gateway is built on [`sigs.k8s.io/custom-metrics-apiserver`](https://github.
 
 ### 6.1 Gateway Flags / Env Vars
 
-Gateway-specific flags, defined by this repository and following the CLI-over-env-over-default precedence in `design.md` §5.2:
+Gateway-specific flags, defined by this repository and following this order: a CLI flag wins over an environment variable, and an environment variable wins over the default:
 
 | Flag | Env Var | Default | Purpose |
 | :--- | :--- | :--- | :--- |
@@ -235,7 +235,7 @@ Gateway-specific flags, defined by this repository and following the CLI-over-en
 
 TLS verification is never disabled for Prometheus; reject URLs containing userinfo and do not forward credentials across redirects.
 
-Serving, authentication, authorization, and Kubernetes-access flags are **not** redefined by this repository — they come from `sigs.k8s.io/custom-metrics-apiserver`'s `basecmd.AdapterBase`, registered on the same command (`design.md` §5.1, §10), and have no environment-variable bindings (CLI-flag-only, matching upstream's own contract):
+Serving, authentication, authorization, and Kubernetes-access flags are **not** redefined by this repository — they come from `sigs.k8s.io/custom-metrics-apiserver`'s `basecmd.AdapterBase`, registered on the same command, and have no environment-variable bindings (CLI-flag-only, matching upstream's own contract):
 
 | Flag | Purpose |
 | :--- | :--- |

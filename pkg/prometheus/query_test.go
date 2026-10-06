@@ -112,9 +112,9 @@ func TestRenderUsage_EmptyClusterOmitsClusterMatcher(t *testing.T) {
 	}
 }
 
-// TestRenderUsage_EveryStatCombination is the design.md §8 golden-query
-// matrix: normalized CPU vs memory, pod vs node scope, both aggregation
-// orders, and every statistic.
+// TestRenderUsage_EveryStatCombination checks the rendered query for every
+// combination: CPU and memory, pod and node scope, both aggregation orders,
+// and every statistic.
 func TestRenderUsage_EveryStatCombination(t *testing.T) {
 	stats := []catalog.Stat{catalog.StatAvg, catalog.StatMax, catalog.StatMin, catalog.StatP50, catalog.StatP90, catalog.StatP95, catalog.StatP99, catalog.StatStddev}
 	scopes := []struct {

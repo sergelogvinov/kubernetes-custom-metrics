@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package prometheus evaluates a catalog base's temporal statistic over
 // resolved Kubernetes targets against a Prometheus-compatible backend
-// (design.md §8; metric-gateway.md §3.2, §3.7). Its interface is
+// (metric-gateway.md §3.2, §3.7). Its interface is
 // Client.Evaluate: callers hand over the catalog base, statistic, window
 // and each target's identities, and get back one value (or a confirmed
 // absence) per target. PromQL rendering, the aligned evaluation time,

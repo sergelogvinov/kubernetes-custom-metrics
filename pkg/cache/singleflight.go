@@ -24,9 +24,9 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// Group collapses concurrent identical computations by key
-// (metric-gateway.md §4 Tier 2), kept as a separate concern from Cache
-// (design.md §6: "Keep singleflight outside the LRU implementation").
+// Group joins identical computations that run at the same time, by key
+// (metric-gateway.md §4 Tier 2). It is kept separate from Cache on purpose:
+// the two have different lifetimes and tests.
 //
 // Unlike a bare singleflight.Group, the function executing a shared
 // computation always runs with a context Group itself owns — derived from

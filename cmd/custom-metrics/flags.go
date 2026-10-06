@@ -84,8 +84,9 @@ const (
 	defaultDiscoveryMode         = catalog.DiscoveryMinimal
 )
 
-// Options holds the effective value of every gateway-specific flag, after
-// flag > environment variable > default resolution (design.md §5.2).
+// Options holds the final value of every gateway-specific flag. A flag wins
+// over an environment variable, and an environment variable wins over the
+// default.
 // Serving, authentication, authorization, and Kubernetes-access flags are
 // not redefined here — they come from basecmd.AdapterBase (metric-gateway.md
 // §6.1).
@@ -136,7 +137,7 @@ func NewOptions() *Options {
 
 // AddFlags registers every gateway-specific flag on fs, bound directly to
 // o's fields, alongside (but not replacing) basecmd.AdapterBase's own
-// flags on the same *pflag.FlagSet (design.md §5.1).
+// flags on the same *pflag.FlagSet.
 func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.Cluster, flagCluster, o.Cluster, "Exact backend cluster label; omitted from the Prometheus query entirely when unset")
 	fs.StringVar(&o.PrometheusURL, flagPrometheusURL, o.PrometheusURL, "Prometheus backend endpoint")

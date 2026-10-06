@@ -14,11 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package resolver translates a requested target (Pod, Node, Deployment,
-// StatefulSet, DaemonSet, Job, or CronJob — named or wildcard) into resolved
-// object identities plus the deduplicated, retained Pod UIDs that back its
-// metric value, using the gateway ServiceAccount's own view of the cluster
-// (design.md §7; metric-gateway.md §3.3, §3.4).
+// Package resolver turns a requested target (Pod, Node, Deployment,
+// StatefulSet, DaemonSet, Job, or CronJob — one object or a list) into the
+// real objects plus the unique Pod names behind their metric value. It
+// reads the cluster with the gateway's own ServiceAccount
+// (metric-gateway.md §3.3, §3.4).
 package resolver
 
 import (
@@ -79,7 +79,7 @@ type ObjectRef struct {
 // Resolution is one resolved target: the object's own identity, plus the
 // deduplicated, retained Pod names that back a pod-scoped metric value. For
 // a Pod target this is the pod's own name; for a workload it is the pods
-// selected by its spec.selector (design.md §7); for a Node target it is
+// selected by its spec.selector; for a Node target it is
 // empty — node-scoped metrics key off Object.Name directly.
 type Resolution struct {
 	Object   ObjectRef
@@ -124,11 +124,10 @@ func (e *NotFoundError) Error() string {
 	return fmt.Sprintf("resolver: %s %q not found", e.Kind, namespacedName(e.Namespace, e.Name))
 }
 
-// ForbiddenError indicates the gateway's own ServiceAccount lacks the
-// Kubernetes RBAC to read a resource it needs to resolve a target — a
-// service configuration failure distinct from a caller's delegated-
-// authorization 403, and one that must map to the caller's 503 instead
-// (design.md §7; metric-gateway.md §3.3).
+// ForbiddenError means the gateway's own ServiceAccount has no RBAC
+// permission to read a resource it needs. This is a problem in the gateway
+// setup, not the caller's fault, so the caller gets 503, not 403
+// (metric-gateway.md §3.3).
 type ForbiddenError struct {
 	Kind      Kind
 	Namespace string
@@ -160,10 +159,9 @@ const DefaultCronJobFallbackWindow = 24 * time.Hour
 // returned continue token (metric-gateway.md §6.3).
 const defaultPageSize = int64(500)
 
-// Resolver resolves targets against the gateway ServiceAccount's own view
-// of the cluster, obtained from a plain dynamic.Interface (design.md §3
-// rule 4: this package does not import AdapterBase or any cmd/custom-metrics
-// type).
+// Resolver resolves targets with the gateway ServiceAccount, through a
+// plain dynamic.Interface. This package does not import AdapterBase or any
+// cmd/custom-metrics type.
 type Resolver struct {
 	client dynamic.Interface
 	clock  clock.PassiveClock
@@ -176,8 +174,7 @@ type Resolver struct {
 type Option func(*Resolver)
 
 // WithClock overrides the clock used for CronJob fallback-window
-// evaluation. Tests inject a fake clock; never sleep in real time
-// (plan.md T3 Done criteria).
+// evaluation. Tests use a fake clock and never sleep in real time.
 func WithClock(c clock.PassiveClock) Option {
 	return func(r *Resolver) { r.clock = c }
 }

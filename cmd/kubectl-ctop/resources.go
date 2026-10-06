@@ -50,7 +50,7 @@ var resourceDescriptors = []resourceDescriptor{
 }
 
 // newResourceCommands builds the seven resource subcommands from
-// resourceDescriptors, all sharing o (design.md §5.3).
+// resourceDescriptors. All of them share o.
 func newResourceCommands(o *Options) []*cobra.Command {
 	cmds := make([]*cobra.Command, 0, len(resourceDescriptors))
 	for _, desc := range resourceDescriptors {
@@ -77,8 +77,8 @@ func newResourceCommand(desc resourceDescriptor, o *Options) *cobra.Command {
 	}
 }
 
-// maxOneArg wraps cobra.MaximumNArgs(1) so Args rejection maps to exit code
-// 2 like every other usage error (design.md §4).
+// maxOneArg wraps cobra.MaximumNArgs(1) so that too many arguments exit with
+// code 2, like every other usage error.
 func maxOneArg(cmd *cobra.Command, args []string) error {
 	if err := cobra.MaximumNArgs(1)(cmd, args); err != nil {
 		return &usageError{err: err}
@@ -88,7 +88,7 @@ func maxOneArg(cmd *cobra.Command, args []string) error {
 }
 
 // validateArgs rejects --namespace on a cluster-scoped resource and
-// --selector combined with a named object (design.md §5.3 point 5).
+// --selector together with a named object.
 func (d resourceDescriptor) validateArgs(cmd *cobra.Command, o *Options, args []string) error {
 	if !d.Namespaced && cmd.Flags().Changed(flagNamespace) {
 		return &usageError{err: fmt.Errorf("--%s is not valid for %s", flagNamespace, d.Name)}
@@ -100,8 +100,8 @@ func (d resourceDescriptor) validateArgs(cmd *cobra.Command, o *Options, args []
 	return nil
 }
 
-// runResource fetches, joins, and renders one resource's rows: the fetch →
-// join → output path (design.md §12), with no watch/refresh logic (T10).
+// runResource fetches, joins, and prints one resource's rows. It runs once;
+// there is no watch or refresh mode.
 func runResource(ctx context.Context, desc resourceDescriptor, o *Options, args []string, stdout io.Writer) error {
 	client, err := NewClient(o)
 	if err != nil {

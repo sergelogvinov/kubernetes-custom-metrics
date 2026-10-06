@@ -17,7 +17,7 @@ limitations under the License.
 // Package catalog owns the immutable, validated metric catalog: decoding
 // and validating the catalog ConfigMap document, expanding it into
 // custom.metrics.k8s.io discovery entries, and parsing/building metric
-// names against the grammar in metric-gateway.md §2 (design.md §9).
+// names against the grammar in metric-gateway.md §2.
 package catalog
 
 import (

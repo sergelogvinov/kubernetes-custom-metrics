@@ -17,8 +17,8 @@ limitations under the License.
 // Package main's RBAC markers describe exactly the permissions
 // internal/resolver needs to resolve Pods, Nodes and the six supported
 // workload kinds (metric-gateway.md §3.3) with the gateway's own
-// ServiceAccount. They are consumed by controller-gen (design.md §13) and
-// carry no runtime behavior of their own.
+// ServiceAccount. controller-gen reads them to generate the RBAC role; they
+// do nothing at runtime.
 //
 // +kubebuilder:rbac:groups="",resources=pods;nodes,verbs=get;list
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets,verbs=get;list

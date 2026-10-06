@@ -31,7 +31,7 @@ import (
 	basecmd "sigs.k8s.io/custom-metrics-apiserver/pkg/cmd"
 )
 
-// gatewayAdapter embeds AdapterBase per design.md §2.1/§10: the framework
+// gatewayAdapter embeds AdapterBase: the framework
 // owns generic-apiserver wiring (secure serving, delegated authn/authz,
 // discovery, health endpoints); this repository supplies the
 // provider.CustomMetricsProvider built in internal/gateway and its own
@@ -79,7 +79,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 }
 
 // NewRootCommand builds the custom-metrics command tree: a single command
-// wrapping basecmd.AdapterBase (design.md §5.1, §10) plus this
+// wrapping basecmd.AdapterBase plus this
 // repository's gateway-specific Options on the same *pflag.FlagSet.
 func NewRootCommand() *cobra.Command {
 	adapter := newGatewayAdapter()

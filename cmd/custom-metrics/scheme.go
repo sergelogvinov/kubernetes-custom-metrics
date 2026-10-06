@@ -26,9 +26,9 @@ import (
 // v1beta1 prioritized ahead of v1beta2 (k8s.io/metrics/pkg/apis/custom_metrics/install),
 // so discovery would otherwise advertise v1beta1 as the preferred (and, per
 // the framework's own discovery-registration loop, only advertised) version.
-// This repository serves only v1beta2 (metric-gateway.md §3.6, design.md
-// §11); reorder the shared scheme's priority once at process init so
-// discovery reflects that.
+// This repository serves only v1beta2 (metric-gateway.md §3.6), so we
+// change the priority of the shared scheme once at start, and discovery
+// shows v1beta2.
 func init() {
 	if err := apiserver.Scheme.SetVersionPriority(customv1beta2.SchemeGroupVersion, customv1beta1.SchemeGroupVersion); err != nil {
 		panic(err)

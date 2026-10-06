@@ -14,12 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package cache provides the gateway's process-local response cache,
-// duplicate-request collapsing, and admission budgets (metric-gateway.md
-// §4, §6.3; design.md §6). It has no knowledge of what gets cached — the
-// gateway's own Result/Key content is a T6 concern (plan.md T5) — so the
-// cache is generic over the stored value type and callers develop/test
-// against synthetic value types.
+// Package cache provides the gateway's in-memory response cache, joining
+// of duplicate requests, and admission limits (metric-gateway.md §4, §6.3).
+// It does not know what it stores: the cache is generic over the value
+// type, so tests can use simple stand-in values.
 package cache
 
 import (
@@ -65,9 +63,9 @@ func TTLFor(window time.Duration, shortTTL, longTTL time.Duration) time.Duration
 // only ... Do not cache errors"). A Get hit returns the stored value
 // unmodified — hits never rewrite timestamps or other content. Cache
 // treats V as immutable once Set: if V contains pointers or slices,
-// callers must not mutate a value obtained from Get or passed to Set
-// (design.md §6 step 8: "copy on read/write or enforce immutable
-// ownership" — this package chooses the immutable-ownership contract).
+// callers must not change a value obtained from Get or passed to Set.
+// This package does not copy values; it relies on callers never changing
+// them.
 type Cache[V any] struct {
 	clock      clock.Clock
 	maxEntries int

@@ -156,7 +156,7 @@ func BuildMetricName(base string, stat Stat, window Window) string {
 // parseMetricName decodes name by matching a known catalog base prefix
 // first, then validating the remaining stat/window segments — never by
 // splitting the name into three underscore-separated fields, since base
-// names contain underscores themselves, e.g. "node_cpu" (design.md §9).
+// names contain underscores themselves, e.g. "node_cpu".
 func parseMetricName(name string, bases map[string]Base) (ParsedMetric, bool) {
 	for baseName, base := range bases {
 		prefix := baseName + "_"

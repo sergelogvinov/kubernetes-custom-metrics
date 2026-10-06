@@ -30,9 +30,9 @@ import (
 	"k8s.io/client-go/dynamic"
 )
 
-// loadCatalog reads and validates the catalog ConfigMap document at path,
-// loaded and validated before the serving socket opens (design.md §9, §10
-// step 2).
+// loadCatalog reads and validates the catalog ConfigMap document at path.
+// It runs before the server starts listening, so a bad catalog stops the
+// start.
 func loadCatalog(path string, mode catalog.DiscoveryMode, maxDiscoveryMetrics int) (*catalog.Catalog, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -50,7 +50,7 @@ func loadCatalog(path string, mode catalog.DiscoveryMode, maxDiscoveryMetrics in
 // buildGateway constructs the real internal/gateway provider from opts and
 // cat, using dynamicClient for the resolver's Kubernetes access
 // (adapter.DynamicClient() in production; a fake dynamic.Interface in
-// tests, per design.md §10 step 3). ctx bounds every shared computation's
+// tests). ctx bounds every shared computation's
 // lifetime (canceled on server shutdown, per cache.Group's contract) — it
 // must be the same context passed to adapter.Run(ctx), not a per-request
 // one. It returns the provider (for adapter.WithCustomMetrics) and the

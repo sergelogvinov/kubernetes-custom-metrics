@@ -1,4 +1,4 @@
-# Normalized Prometheus input contract (metric-gateway.md §8, design.md §8).
+# Normalized Prometheus input contract (metric-gateway.md §8).
 #
 # Documented scrape setup this rule set targets — the "at least one supported
 # scrape setup" required before release:

@@ -42,7 +42,7 @@ func (v targetValues) get(j int) (float64, bool) {
 // error). It returns a non-nil error — wrapping ErrBackend — for protocol
 // errors, warnings/partial data, unexpected result types, a series without
 // a valid target label, duplicate series for one target, or non-finite
-// values (design.md §8).
+// values.
 func decodeByTarget(value model.Value, warnings promv1.Warnings, err error, n int) (targetValues, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrBackend, err)

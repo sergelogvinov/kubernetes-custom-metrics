@@ -57,8 +57,8 @@ var (
 	validOutputs = []string{"table", "json", "yaml"}
 )
 
-// Options holds the effective value of every persistent ctop flag, after
-// flag > environment variable > default resolution (design.md §5.2).
+// Options holds the final value of every ctop flag. A flag wins over an
+// environment variable, and an environment variable wins over the default.
 type Options struct {
 	Window         string
 	Stat           string
@@ -87,9 +87,8 @@ func NewOptions() *Options {
 }
 
 // AddFlags registers every persistent ctop flag on fs, bound directly to o's
-// fields. Every resource subcommand inherits these through cobra's
-// PersistentFlags() merge; no subcommand registers flags of its own
-// (design.md §5.3).
+// fields. Every resource subcommand gets these flags from cobra's
+// PersistentFlags(); no subcommand adds flags of its own.
 func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.Window, flagWindow, o.Window, "Statistical window, e.g. 5m, 26m, 2h (any Go duration, minimum 1m)")
 	fs.StringVar(&o.Stat, flagStat, o.Stat, "Statistic (avg, max, min, p50, p90, p95, p99, stddev)")
@@ -110,7 +109,7 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 // and NoHeaders have no environment variable and are flag-only. KUBECONFIG is
 // deliberately excluded here too: client-go itself applies that environment
 // variable's path-list merging, and copying it into a single Kubeconfig
-// field would collapse that behavior to one file (design.md §5.2).
+// field would reduce that list to one file.
 func (o *Options) ResolveEnvironment(changed func(name string) bool, lookupEnv func(string) (string, bool)) error {
 	if !changed(flagNamespace) {
 		if v, ok := lookupEnv(envNamespace); ok {

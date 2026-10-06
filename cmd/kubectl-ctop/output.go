@@ -28,8 +28,8 @@ import (
 )
 
 // Row is the flattened output shape shared by table, JSON, and YAML
-// rendering: cpu and memory are sibling fields, never nested (design.md §12;
-// metric-gateway.md §7.3/locked decision 11). Namespace is omitted for
+// rendering: cpu and memory are sibling fields, never nested
+// (metric-gateway.md §7.3/locked decision 11). Namespace is omitted for
 // cluster-scoped resources (Nodes).
 type Row struct {
 	Namespace string `json:"namespace,omitempty" yaml:"namespace,omitempty"`

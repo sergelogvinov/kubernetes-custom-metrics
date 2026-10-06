@@ -26,9 +26,8 @@ import (
 	clocktesting "k8s.io/utils/clock/testing"
 )
 
-// testValue is the synthetic Result stand-in this package's tests use
-// (plan.md T5: "this task can develop and test against synthetic Result
-// stand-ins").
+// testValue is a simple stand-in for the gateway's Result, used by this
+// package's tests.
 type testValue struct {
 	id   string
 	size int64

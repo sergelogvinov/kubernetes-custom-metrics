@@ -27,10 +27,10 @@ import (
 	metricsv1beta2 "k8s.io/metrics/pkg/apis/custom_metrics/v1beta2"
 )
 
-// collectedValue is one identity's value for a single metric, preserving
-// enough identity and timing to join a CPU value with its memory
-// counterpart. The custom-metrics API has no atomic CPU+memory snapshot, so
-// CPU and memory are always two independent round trips (design.md §12).
+// collectedValue is one object's value for a single metric. It keeps enough
+// identity and timing data to join a CPU value with its memory value. The
+// custom-metrics API cannot return CPU and memory together, so they are
+// always two separate requests.
 type collectedValue struct {
 	Namespace string
 	Name      string
