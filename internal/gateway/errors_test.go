@@ -27,6 +27,7 @@ import (
 	"github.com/sergelogvinov/kubernetes-custom-metrics/internal/telemetry"
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/cache"
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/prometheus"
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/resource"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/component-base/metrics"
 	"k8s.io/component-base/metrics/testutil"
@@ -72,7 +73,7 @@ func TestService_Get_ClassifiesEveryFailureOnce(t *testing.T) {
 		},
 		{
 			name:       "object not found",
-			resolver:   &fakeResolver{err: &resolver.NotFoundError{Kind: resolver.KindPod, Namespace: "prod", Name: "web-0", Message: "gone"}},
+			resolver:   &fakeResolver{err: &resolver.NotFoundError{Kind: resource.Pod, Namespace: "prod", Name: "web-0", Message: "gone"}},
 			wantCode:   404,
 			wantReason: "not-found",
 		},
@@ -84,7 +85,7 @@ func TestService_Get_ClassifiesEveryFailureOnce(t *testing.T) {
 		},
 		{
 			name:       "service account forbidden",
-			resolver:   &fakeResolver{err: &resolver.ForbiddenError{Kind: resolver.KindPod, Err: errors.New("RBAC denied")}},
+			resolver:   &fakeResolver{err: &resolver.ForbiddenError{Kind: resource.Pod, Err: errors.New("RBAC denied")}},
 			wantCode:   503,
 			wantReason: "service-account-forbidden",
 		},

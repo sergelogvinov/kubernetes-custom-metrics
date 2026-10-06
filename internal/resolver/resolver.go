@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package resolver turns a requested target (Pod, Node, Deployment,
 // StatefulSet, DaemonSet, Job, or CronJob — one object or a list) into the
-// real objects plus the unique Pod names behind their metric value. It
+// real objects plus the members behind their metric value. It
 // reads the cluster with the gateway's own ServiceAccount
 // (metric-gateway.md §3.3, §3.4).
 package resolver
@@ -28,45 +28,12 @@ import (
 	"sort"
 	"time"
 
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/resource"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/utils/clock"
 )
-
-// Kind is one of the seven resource kinds the gateway resolves
-// (metric-gateway.md §1 decision 6, §3.3).
-type Kind string
-
-// The seven supported resource kinds.
-const (
-	KindPod         Kind = "Pod"
-	KindNode        Kind = "Node"
-	KindDeployment  Kind = "Deployment"
-	KindStatefulSet Kind = "StatefulSet"
-	KindDaemonSet   Kind = "DaemonSet"
-	KindJob         Kind = "Job"
-	KindCronJob     Kind = "CronJob"
-)
-
-// kindSpec is the fixed GroupVersionResource and scope for a Kind. These are
-// built-in Kubernetes resources with stable versions, so the resolver
-// hardcodes them rather than performing RESTMapper discovery.
-type kindSpec struct {
-	gvr        schema.GroupVersionResource
-	namespaced bool
-}
-
-var kindSpecs = map[Kind]kindSpec{
-	KindPod:         {gvr: schema.GroupVersionResource{Version: "v1", Resource: "pods"}, namespaced: true},
-	KindNode:        {gvr: schema.GroupVersionResource{Version: "v1", Resource: "nodes"}, namespaced: false},
-	KindDeployment:  {gvr: schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, namespaced: true},
-	KindStatefulSet: {gvr: schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "statefulsets"}, namespaced: true},
-	KindDaemonSet:   {gvr: schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "daemonsets"}, namespaced: true},
-	KindJob:         {gvr: schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "jobs"}, namespaced: true},
-	KindCronJob:     {gvr: schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "cronjobs"}, namespaced: true},
-}
 
 // ObjectRef identifies one resolved Kubernetes object.
 type ObjectRef struct {
@@ -76,14 +43,14 @@ type ObjectRef struct {
 	CreationTimestamp time.Time
 }
 
-// Resolution is one resolved target: the object's own identity, plus the
-// deduplicated, retained Pod names that back a pod-scoped metric value. For
-// a Pod target this is the pod's own name; for a workload it is the pods
-// selected by its spec.selector; for a Node target it is
-// empty — node-scoped metrics key off Object.Name directly.
+// Resolution is one resolved target: the object's own identity, plus its
+// members — the identities whose series make up its metric value. For a
+// Node target this is the Node's own name; for a Pod target, the pod's own
+// name; for a workload, the deduplicated, retained pods selected by its
+// spec.selector. Empty means the object has no eligible members.
 type Resolution struct {
-	Object   ObjectRef
-	PodNames []string
+	Object  ObjectRef
+	Members []string
 	// CronJobFallback is true when this resolution came from a CronJob's
 	// recent-Jobs fallback (metric-gateway.md §3.4 step 2) rather than an
 	// active Job. Always false for every other Kind. Telemetry use only
@@ -95,7 +62,7 @@ type Resolution struct {
 // matching ObjectSelector in scope (Name empty — the wildcard path,
 // metric-gateway.md §3.5, §3.6).
 type Target struct {
-	Kind Kind
+	Kind resource.Kind
 	// Namespace is ignored for Node, the only cluster-scoped kind.
 	Namespace string
 	// Name selects a single named object. Empty means the wildcard path.
@@ -110,7 +77,7 @@ type Target struct {
 // for a CronJob — that no active or recent Job exists to derive metrics
 // from. It maps to the caller's 404 (metric-gateway.md §3.4, §3.6).
 type NotFoundError struct {
-	Kind      Kind
+	Kind      resource.Kind
 	Namespace string
 	Name      string
 	Message   string
@@ -129,7 +96,7 @@ func (e *NotFoundError) Error() string {
 // setup, not the caller's fault, so the caller gets 503, not 403
 // (metric-gateway.md §3.3).
 type ForbiddenError struct {
-	Kind      Kind
+	Kind      resource.Kind
 	Namespace string
 	Name      string
 	Err       error
@@ -211,18 +178,17 @@ func New(client dynamic.Interface, opts ...Option) *Resolver {
 // matching object's Resolution sorted by namespace/name/UID, or an empty
 // slice if none match — wildcards never 404 (metric-gateway.md §3.6).
 func (r *Resolver) Resolve(ctx context.Context, target Target) ([]Resolution, error) {
-	spec, ok := kindSpecs[target.Kind]
-	if !ok {
+	if !target.Kind.Valid() {
 		return nil, fmt.Errorf("resolver: unsupported kind %q", target.Kind)
 	}
 
 	namespace := target.Namespace
-	if !spec.namespaced {
+	if !target.Kind.Namespaced() {
 		namespace = ""
 	}
 
 	if target.Name != "" {
-		resolution, err := r.resolveNamed(ctx, target.Kind, spec, namespace, target.Name)
+		resolution, err := r.resolveNamed(ctx, target.Kind, namespace, target.Name)
 		if err != nil {
 			return nil, err
 		}
@@ -230,30 +196,25 @@ func (r *Resolver) Resolve(ctx context.Context, target Target) ([]Resolution, er
 		return []Resolution{resolution}, nil
 	}
 
-	return r.resolveWildcard(ctx, target.Kind, spec, namespace, target.ObjectSelector)
+	return r.resolveWildcard(ctx, target.Kind, namespace, target.ObjectSelector)
 }
 
-func (r *Resolver) resolveNamed(ctx context.Context, kind Kind, spec kindSpec, namespace, name string) (Resolution, error) {
+func (r *Resolver) resolveNamed(ctx context.Context, kind resource.Kind, namespace, name string) (Resolution, error) {
 	switch kind {
-	case KindPod, KindNode:
-		obj, err := r.getObject(ctx, spec, kind, namespace, name)
+	case resource.Pod, resource.Node:
+		obj, err := r.getObject(ctx, kind, namespace, name)
 		if err != nil {
 			return Resolution{}, err
 		}
 		ref := objectRefFrom(obj)
 
-		podNames := []string(nil)
-		if kind == KindPod {
-			podNames = []string{ref.Name}
-		}
+		return Resolution{Object: ref, Members: []string{ref.Name}}, nil
 
-		return Resolution{Object: ref, PodNames: podNames}, nil
-
-	case KindCronJob:
+	case resource.CronJob:
 		return r.resolveNamedCronJob(ctx, namespace, name)
 
 	default: // Deployment, StatefulSet, DaemonSet, Job
-		obj, err := r.getObject(ctx, spec, kind, namespace, name)
+		obj, err := r.getObject(ctx, kind, namespace, name)
 		if err != nil {
 			return Resolution{}, err
 		}
@@ -269,12 +230,12 @@ func (r *Resolver) resolveNamed(ctx context.Context, kind Kind, spec kindSpec, n
 			return Resolution{}, err
 		}
 
-		return Resolution{Object: ref, PodNames: podNames}, nil
+		return Resolution{Object: ref, Members: podNames}, nil
 	}
 }
 
-func (r *Resolver) resolveWildcard(ctx context.Context, kind Kind, spec kindSpec, namespace string, objectSelector labels.Selector) ([]Resolution, error) {
-	objs, err := r.listObjects(ctx, spec, kind, namespace, objectSelector)
+func (r *Resolver) resolveWildcard(ctx context.Context, kind resource.Kind, namespace string, objectSelector labels.Selector) ([]Resolution, error) {
+	objs, err := r.listObjects(ctx, kind, namespace, objectSelector)
 	if err != nil {
 		return nil, err
 	}
@@ -286,13 +247,10 @@ func (r *Resolver) resolveWildcard(ctx context.Context, kind Kind, spec kindSpec
 		ref := objectRefFrom(obj)
 
 		switch kind {
-		case KindPod:
-			resolutions = append(resolutions, Resolution{Object: ref, PodNames: []string{ref.Name}})
+		case resource.Pod, resource.Node:
+			resolutions = append(resolutions, Resolution{Object: ref, Members: []string{ref.Name}})
 
-		case KindNode:
-			resolutions = append(resolutions, Resolution{Object: ref})
-
-		case KindCronJob:
+		case resource.CronJob:
 			podNames, usedFallback, err := r.resolveCronJobPodNames(ctx, obj)
 			if err != nil {
 				if _, ok := errors.AsType[*NotFoundError](err); ok { //nolint:errcheck
@@ -304,7 +262,7 @@ func (r *Resolver) resolveWildcard(ctx context.Context, kind Kind, spec kindSpec
 
 				return nil, err
 			}
-			resolutions = append(resolutions, Resolution{Object: ref, PodNames: podNames, CronJobFallback: usedFallback})
+			resolutions = append(resolutions, Resolution{Object: ref, Members: podNames, CronJobFallback: usedFallback})
 
 		default: // Deployment, StatefulSet, DaemonSet, Job
 			selector, err := extractSelector(obj)
@@ -315,7 +273,7 @@ func (r *Resolver) resolveWildcard(ctx context.Context, kind Kind, spec kindSpec
 			if err != nil {
 				return nil, err
 			}
-			resolutions = append(resolutions, Resolution{Object: ref, PodNames: podNames})
+			resolutions = append(resolutions, Resolution{Object: ref, Members: podNames})
 		}
 	}
 

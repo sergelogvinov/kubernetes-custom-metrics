@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/catalog"
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/resource"
 	clocktesting "k8s.io/utils/clock/testing"
 )
 
@@ -154,8 +155,8 @@ func TestEvaluate_RealPrometheus(t *testing.T) {
 		return eval.Samples
 	}
 
-	both := Target{Name: "web", Pods: []string{"web-0", "web-1"}}
-	cpu := catalog.Base{Series: "pod_cpu_usage_cores", Unit: catalog.UnitCores, Scope: catalog.ScopePod}
+	both := Target{Members: []string{"web-0", "web-1"}}
+	cpu := catalog.Base{Series: "pod_cpu_usage_cores", Unit: catalog.UnitCores, Scope: resource.ScopePod}
 
 	cpu.Aggregation = catalog.AggregationSumThenStat
 	sumThenStat := evaluate(cpu, catalog.StatMax, both)[0]
@@ -171,13 +172,13 @@ func TestEvaluate_RealPrometheus(t *testing.T) {
 	}
 
 	// One batch evaluates several targets through the real query engine,
-	// each against its own identity set.
+	// each against its own members.
 	cpu.Aggregation = catalog.AggregationSumThenStat
 	batch := evaluate(cpu, catalog.StatMax,
-		Target{Name: "web-0", Pods: []string{"web-0"}},
+		Target{Members: []string{"web-0"}},
 		both,
-		Target{Name: "web-1", Pods: []string{"web-1"}},
-		Target{Name: "gone", Pods: []string{"gone-0"}},
+		Target{Members: []string{"web-1"}},
+		Target{Members: []string{"gone-0"}},
 	)
 	for i, want := range []float64{1.0, 1.1, 1.0} {
 		if !batch[i].Present || math.Abs(batch[i].Value-want) > 0.01 {
@@ -190,7 +191,7 @@ func TestEvaluate_RealPrometheus(t *testing.T) {
 
 	// Raw input sums every selected Pod into one value rather than
 	// returning one series per Pod.
-	rawMemory := catalog.Base{Unit: catalog.UnitBytes, Scope: catalog.ScopePod, Aggregation: catalog.AggregationRaw}
+	rawMemory := catalog.Base{Unit: catalog.UnitBytes, Scope: resource.ScopePod, Aggregation: catalog.AggregationRaw}
 	raw := evaluate(rawMemory, catalog.StatAvg, both)[0]
 	if !raw.Present || math.Abs(raw.Value-300) > 0.01 {
 		t.Errorf("raw memory = %+v, want 300 (100 + 200)", raw)

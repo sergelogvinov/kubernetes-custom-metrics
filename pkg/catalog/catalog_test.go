@@ -18,11 +18,13 @@ package catalog_test
 
 import (
 	_ "embed"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/catalog"
+	"github.com/sergelogvinov/kubernetes-custom-metrics/pkg/resource"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
@@ -50,7 +52,7 @@ func TestLoad_FullCatalog(t *testing.T) {
 	if !ok {
 		t.Fatal(`Base("node_cpu") not found`)
 	}
-	if base.Series != "node_cpu_usage_cores" || base.Unit != catalog.UnitCores || base.Scope != catalog.ScopeNode {
+	if base.Series != "node_cpu_usage_cores" || base.Unit != catalog.UnitCores || base.Scope != resource.ScopeNode {
 		t.Errorf("node_cpu base = %+v, want series=node_cpu_usage_cores unit=cores scope=node", base)
 	}
 }
@@ -288,6 +290,51 @@ func TestLoad_Modes(t *testing.T) {
 				t.Error(`Parse("cpu_p95_26m") failed`)
 			}
 		})
+	}
+}
+
+// TestLoad_DiscoveryFollowsResourceKinds pins that each base is advertised
+// for exactly the resource kinds of its scope, in resource.All() order.
+func TestLoad_DiscoveryFollowsResourceKinds(t *testing.T) {
+	cat, err := catalog.Load(testdata, catalog.DiscoveryMinimal, catalog.MaxDiscoveryMetrics)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	got := map[string][]schema.GroupResource{}
+	for _, e := range cat.Entries() {
+		parsed, ok := cat.Parse(e.Metric)
+		if !ok {
+			t.Fatalf("advertised metric %q does not parse", e.Metric)
+		}
+
+		kind, ok := resource.Lookup(e.GroupResource)
+		if !ok {
+			t.Fatalf("%s: advertised for unsupported resource %v", e.Metric, e.GroupResource)
+		}
+		if e.Namespaced != kind.Namespaced() {
+			t.Errorf("%s on %v: Namespaced = %v, want %v", e.Metric, e.GroupResource, e.Namespaced, kind.Namespaced())
+		}
+
+		got[parsed.Base.Name] = append(got[parsed.Base.Name], e.GroupResource)
+	}
+
+	for _, name := range []string{"cpu", "memory", "node_cpu", "node_memory"} {
+		base, ok := cat.Base(name)
+		if !ok {
+			t.Fatalf("Base(%q) not found", name)
+		}
+
+		var want []schema.GroupResource
+		for _, kind := range resource.All() {
+			if kind.Scope() == base.Scope {
+				want = append(want, kind.GroupResource())
+			}
+		}
+
+		if !slices.Equal(got[name], want) {
+			t.Errorf("%s advertised for %v, want %v", name, got[name], want)
+		}
 	}
 }
 
