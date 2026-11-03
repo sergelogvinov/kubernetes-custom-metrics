@@ -20,7 +20,12 @@ updates:
       actions:
         patterns:
           - "actions/*"
+          - "azure/*"
           - "docker/*"
+          - "sigstore/*"
+      helm:
+        patterns:
+          - "helm/*"
 
   - package-ecosystem: "gomod"
     directory: "/"

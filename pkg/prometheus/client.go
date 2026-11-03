@@ -175,7 +175,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	_, _, err := c.api.Query(ctx, "1", time.Now())
+	_, _, _, err := c.api.Query(ctx, "1", time.Now()) //nolint:dogsled // only the error matters for a liveness check
 
 	return err
 }
@@ -200,7 +200,7 @@ func (c *Client) runByTarget(ctx context.Context, query string, ts time.Time, n 
 	start := time.Now()
 	klog.V(4).InfoS("querying prometheus", "query", query, "queryTime", ts)
 
-	value, warnings, err := c.api.Query(ctx, query, ts)
+	value, warnings, infos, err := c.api.Query(ctx, query, ts)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -209,7 +209,7 @@ func (c *Client) runByTarget(ctx context.Context, query string, ts time.Time, n 
 		// shows up as a canceled/stream-closed error further up the stack.
 		klog.ErrorS(err, "prometheus query failed", "query", query, "duration", duration)
 	} else {
-		klog.V(4).InfoS("prometheus query completed", "query", query, "duration", duration, "results", resultCount(value), "warnings", warnings)
+		klog.V(4).InfoS("prometheus query completed", "query", query, "duration", duration, "results", resultCount(value), "warnings", warnings, "infos", infos)
 	}
 
 	if err != nil && ctx.Err() != nil {
